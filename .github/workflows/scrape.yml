@@ -1,0 +1,71 @@
+name: Denný scrape trhových cien
+
+# Mac-nezávislý scrape: beží na GitHub runneri, commitne JSON do tohto repa,
+# a curlne /api/ingest-market na appke → D1. Stav (listings.db) drží actions/cache,
+# cold-start seed = state/listings.db.gz (jednorazovo commitnutý, história first_price/drops/geokód).
+
+on:
+  schedule:
+    - cron: "0 5 * * *"      # 05:00 UTC ≈ 07:00 SELČ / 06:00 SEČ
+  workflow_dispatch: {}       # manuálne spustenie (test)
+
+permissions:
+  contents: write
+
+concurrency:
+  group: scrape
+  cancel-in-progress: false
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Restore listings.db (cache)
+        uses: actions/cache@v4
+        with:
+          path: listings.db
+          key: listings-db-${{ github.run_id }}
+          restore-keys: |
+            listings-db-
+
+      - name: Seed DB ak nie je cache
+        run: |
+          if [ ! -f listings.db ]; then
+            echo "cache miss → seed z state/listings.db.gz"
+            gunzip -c state/listings.db.gz > listings.db
+          else
+            echo "listings.db z cache ($(du -h listings.db | cut -f1))"
+          fi
+
+      - name: Scrape (delta + re-verify)
+        env:
+          REVERIFY_CAP: "800"
+        run: python3 scraper.py --mode delta
+
+      - name: Commit JSON výstupy
+        run: |
+          git config user.name "trilipy-bot"
+          git config user.email "bot@users.noreply.github.com"
+          git add market-data.json market-listings-*.json market-pricehistory-*.json market-trends.json 2>/dev/null || true
+          if git diff --cached --quiet; then
+            echo "nič nové na commit"
+          else
+            git commit -m "data $(date -u +%F)"
+            git push
+          fi
+
+      - name: Ingest do D1 (appka)
+        run: |
+          code=$(curl -sS -o /tmp/ing.json -w "%{http_code}" -X POST \
+            "https://trilipy-kataster.kristiak-bohus.workers.dev/api/ingest-market" \
+            -H "x-alert-secret: ${{ secrets.ALERT_SECRET }}" \
+            -H "content-type: application/json" -d '{}')
+          echo "HTTP $code"; cat /tmp/ing.json; echo
+          test "$code" = "200"
