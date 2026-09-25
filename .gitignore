@@ -1,0 +1,6 @@
+# runtime stav scrapera (drží sa cez actions/cache, seed je v state/listings.db.gz)
+listings.db
+listings.db-journal
+tg_alerted.json
+__pycache__/
+*.pyc
