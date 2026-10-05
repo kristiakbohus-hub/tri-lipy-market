@@ -1,0 +1,32 @@
+name: Denné alerty (Telegram)
+
+# Mac-nezávislý beh: zavolá /api/run-alerts (appka počíta všetko z D1) a výsledné správy
+# pošle do Telegramu. Žiadna lokálna DB, žiadny Mac. Pôvodný Mac launchd (sk.trilipy.alerts)
+# ostáva ako záloha, túto appku to nahradilo pre autonómny beh.
+
+on:
+  schedule:
+    - cron: "5 7 * * *"       # 07:05 UTC ≈ 09:05 SELČ (letný čas) / 08:05 SEČ (zimný čas)
+    - cron: "5 15 * * *"      # 15:05 UTC ≈ 17:05 SELČ / 16:05 SEČ
+  workflow_dispatch: {}        # manuálne spustenie (test)
+
+permissions:
+  contents: read
+
+jobs:
+  alerts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Spusti alerty + pošli do Telegramu
+        env:
+          ALERT_SECRET: ${{ secrets.ALERT_SECRET }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python3 run_alerts.py
