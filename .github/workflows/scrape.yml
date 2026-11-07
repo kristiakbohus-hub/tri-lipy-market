@@ -61,11 +61,26 @@ jobs:
             git push
           fi
 
-      - name: Ingest do D1 (appka)
+      - name: Ingest do D1 (appka) — stepovo
+        # Monolitný ingest (všetko v jednom requeste) prekračoval limit Workera (~1000 subrequestov)
+        # a krok padal. Appka má teraz stepový /api/ingest-market; poženieme ho po krokoch, každý je
+        # samostatný bounded request (ako /ceny z prehliadača): data -> listings[i] -> pricehistory[i] -> compute.
+        env:
+          SECRET: ${{ secrets.ALERT_SECRET }}
+          APP: https://trilipy-kataster.kristiak-bohus.workers.dev
         run: |
-          code=$(curl -sS -o /tmp/ing.json -w "%{http_code}" -X POST \
-            "https://trilipy-kataster.kristiak-bohus.workers.dev/api/ingest-market" \
-            -H "x-alert-secret: ${{ secrets.ALERT_SECRET }}" \
-            -H "content-type: application/json" -d '{}')
-          echo "HTTP $code"; cat /tmp/ing.json; echo
-          test "$code" = "200"
+          set -euo pipefail
+          post() {
+            code=$(curl -sS --max-time 150 -o /tmp/ing.json -w "%{http_code}" -X POST \
+              "$APP/api/ingest-market" -H "x-alert-secret: $SECRET" \
+              -H "content-type: application/json" -d "$1")
+            echo "  $1 -> HTTP $code"; cat /tmp/ing.json; echo
+            test "$code" = "200"
+          }
+          post '{"step":"data"}'
+          chunks=$(python3 -c "import json;print(int(json.load(open('/tmp/ing.json')).get('chunks') or 0))")
+          ph=$(python3 -c "import json;print(int(json.load(open('/tmp/ing.json')).get('phChunks') or 0))")
+          echo "listings chunkov=$chunks, pricehistory chunkov=$ph"
+          i=0; while [ "$i" -lt "$chunks" ]; do post "{\"step\":\"listings\",\"chunk\":$i}"; i=$((i+1)); done
+          i=0; while [ "$i" -lt "$ph" ]; do post "{\"step\":\"pricehistory\",\"chunk\":$i}"; i=$((i+1)); done
+          post '{"step":"compute"}'
