@@ -73,6 +73,10 @@ jobs:
         env:
           REVERIFY_CAP: "800"
           GEOCODE_BUDGET: "400"
+          # časový strop zberu: po 95 min sa ďalšie stránky nesťahujú (zvyšok obmeny v ďalšom behu), re-verify
+          # max. +10 min — zvyšok limitu jobu (150 min) ostane na uloženie, commit a ingest do appky
+          SCRAPE_BUDGET_MIN: "95"
+          REVERIFY_BUDGET_MIN: "10"
         run: |
           rm -f market-listings-*.json market-pricehistory-*.json   # staré chunky (napr. z 20. 9.) nesmú ostať v repe
           python3 scraper.py --mode rolling

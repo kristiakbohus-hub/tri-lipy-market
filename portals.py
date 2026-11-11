@@ -83,9 +83,18 @@ class Blocked(Exception):
     pass
 
 
+class OutOfTime(Blocked):
+    """Časový strop behu (nastaví scraper.main) — zvyšok obmeny príde v ďalšom behu, nie je to chyba."""
+
+
+DEADLINE = None
+
+
 def fetch(url, timeout=30, tries=3):
     """Vráti (status, html). Pri 403/429 alebo stránke s overením „nie som robot" hodí Blocked.
     Výpadok spojenia / 5xx sa skúsi znova (3×, čakanie 5 s, 15 s) — jeden výpadok nesmie stratiť okres."""
+    if DEADLINE is not None and time.time() > DEADLINE:
+        raise OutOfTime("časový strop — zvyšok obmeny v ďalšom behu")
     req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept-Language": "sk", "Accept": "text/html"})
     for i in range(tries):
         try:
@@ -212,7 +221,7 @@ def crawl_nehnutelnosti(day_index, refine_ptype, sleep=1.5, max_pages=NHN_MAX_PA
                         st["rows"] += 1
                     pg += 1
     except Blocked as e:
-        st["blocked"] = str(e)
+        st["stopped" if isinstance(e, OutOfTime) else "blocked"] = str(e)
     return rows, seen, st
 
 
@@ -283,7 +292,7 @@ def crawl_topreality(day_index, refine_ptype, okres_kraj, sleep=1.3):
                     st["rows"] += 1
                 pg += 1
     except Blocked as e:
-        st["blocked"] = str(e)
+        st["stopped" if isinstance(e, OutOfTime) else "blocked"] = str(e)
     return rows, seen, st
 
 
@@ -385,7 +394,7 @@ def crawl_zoznamrealit(day_index, refine_ptype, seen_known, okres_kraj, sleep=1.
                              area_m2=area, price_eur=total, ppm2=ppm2, listed=None, okres=okres, kraj=okres_kraj.get(okres)))
             st["rows"] += 1
     except Blocked as e:
-        st["blocked"] = str(e)
+        st["stopped" if isinstance(e, OutOfTime) else "blocked"] = str(e)
     return rows, seen, st
 
 
