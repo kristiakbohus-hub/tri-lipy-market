@@ -1,0 +1,63 @@
+{
+ "date": "2026-11-11",
+ "mode": "rolling",
+ "day_index": 3,
+ "sources": {
+  "bazos": {
+   "pages": 433,
+   "rows": 13333,
+   "errors": 30,
+   "seconds": 1623
+  },
+  "reality": {
+   "pages": 138,
+   "rows": 88,
+   "seen": 407,
+   "seconds": 1326
+  },
+  "nehnutelnosti": {
+   "pages": 291,
+   "rows": 7595,
+   "seen": 0,
+   "errors": 0,
+   "blocked": null,
+   "capped": [],
+   "seconds": 1576
+  },
+  "topreality": {
+   "pages": 479,
+   "rows": 7615,
+   "seen": 0,
+   "errors": 0,
+   "blocked": null,
+   "capped": [],
+   "seconds": 1278
+  },
+  "zoznamrealit": {
+   "pages": 67,
+   "rows": 250,
+   "seen": 0,
+   "errors": 0,
+   "blocked": null,
+   "capped": [],
+   "detail": 300,
+   "seconds": 746
+  }
+ },
+ "active_listings": 17151,
+ "seen_today": 28614,
+ "new_today": 8497,
+ "by_source_active": {
+  "bazos": 13007,
+  "nehnutelnosti": 7546,
+  "reality": 639,
+  "topreality": 7615,
+  "zoznamrealit": 250
+ },
+ "seconds": 7887,
+ "chunks": 10,
+ "problems": [
+  "bazos: 30 stránok sa nepodarilo načítať"
+ ],
+ "ok": false
+}
