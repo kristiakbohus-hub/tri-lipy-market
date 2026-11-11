@@ -10,8 +10,15 @@ Preto tento skript publikuje market-data.json na VEREJNÉ URL (napr. GitHub raw)
 a appka si ho stiahne (server fn refreshMarketData, /ceny) a uloží do D1.
 
 Použitie:
-  python3 scraper.py --mode delta     # denne (najnovšie strany)
-  python3 scraper.py --mode full      # týždenne (plný re-scrape)
+  python3 scraper.py --mode rolling   # DENNE v cloude (2026-11-11): najnovšie strany + 1/7 celého katalógu
+                                      #   (Bazoš, reality.sk, nehnutelnosti.sk, topreality.sk, zoznamrealit.sk)
+  python3 scraper.py --mode delta     # len najnovšie strany (rýchly test)
+  python3 scraper.py --mode full      # celý Bazoš naraz (hodiny)
+
+PREČO ROLLING: cloud do 11. 11. bežal len `delta` = 8 strán/kategória = 160 najnovších inzerátov (na
+Bazoši pár hodín z ~13 500 bytov), full sa od presunu do cloudu nespustil → 37 tis. inzerátov zamrzlo
+na last_seen 20. 9. Rolling prejde každý deň 1/7 katalógu, takže každý aktívny inzerát sa uvidí
+aspoň raz za týždeň a „aktívny" (videný za 21 dní) znamená naozaj aktívny.
   python3 scraper.py --test           # test parsovania (1 stránka)
 Len stdlib — beží aj cez launchd bez pip.
 
@@ -26,6 +33,7 @@ DIR = os.path.dirname(os.path.abspath(__file__))
 DB = os.path.join(DIR, "listings.db")
 OUT = os.path.join(DIR, "market-data.json")
 UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36"
+sys.path.insert(0, DIR)   # portals.py / price_trends.py vedľa skriptu (aj pri `python3 -I`)
 # Telegram (zdieľaný modul v 17_UP_MONITOR)
 sys.path.insert(0, os.path.join(os.path.dirname(DIR), "17_UP_MONITOR"))
 try:
@@ -43,6 +51,7 @@ BAZOS = [
     ("prenajmu/dom", "dom", "prenajom"),
 ]
 BASE = "https://reality.bazos.sk/"
+GEO_UA = "tri-lipy-scraper/1.1 (+https://github.com/kristiakbohus-hub/tri-lipy-market)"   # Nominatim: identifikácia aplikácie
 
 def fetch(url, tries=3):
     for i in range(tries):
@@ -119,17 +128,29 @@ def parse_bazos(html, ptype, deal):
                             obec=obec, psc=psc, area_m2=area, price_eur=total, ppm2=ppm2, listed=listed))
     return out
 
-def crawl_bazos(full):
-    pages = 700 if full else 8   # full = kým nie sú prázdne strany (early-break); delta = najnovšie
+def crawl_bazos(mode, day_index=0, stat=None):
+    """delta = najnovších 8 strán; full = všetko; rolling = najnovších 8 + každá 7. hlbšia strana podľa dňa
+    (za týždeň celý katalóg). Koniec katalógu = prázdna stránka (Bazoš vráti 404/prázdno za poslednou)."""
+    newest = 8
     all_l = []
     for seg, ptype, deal in BAZOS:
-        for p in range(pages):
+        before = len(all_l)
+        p = 0
+        while p < 1000:
+            if mode == "delta" and p >= newest:
+                break
+            if mode == "rolling" and p >= newest and p % 7 != day_index:
+                p += 1
+                continue
             url = f"{BASE}{seg}/{p*20}/" if p else f"{BASE}{seg}/"
             got = parse_bazos(fetch(url), ptype, deal)
+            if stat is not None: stat["pages"] = stat.get("pages", 0) + 1
             if not got and p > 0: break
             all_l += got
             time.sleep(1.3)
-        print(f"  bazos {ptype}: {sum(1 for l in all_l if l['ptype']==ptype)} inzerátov")
+            p += 1
+        print(f"  bazos {seg}: {len(all_l) - before} inzerátov")
+    if stat is not None: stat["rows"] = len(all_l)
     return all_l
 
 # ——— reality.sk (JSON-LD; detail stránky majú presnú obec) ———
@@ -183,17 +204,28 @@ def parse_reality_detail(url, eid, ptype):
                     ppm2=(round(price / area, 1) if area and area > 5 else None), listed=None)
     return None
 
-def crawl_reality(c, full):
+def crawl_reality(c, mode, day_index=0, stat=None):
+    """Videné (už známe) inzeráty zo zoznamu sa len potvrdia (last_seen) — dovtedy sa im last_seen
+    nikdy neposunul a po prvom videní všetky „zostarli". Detail (presná obec) len pre nové."""
     seen = {r[0] for r in c.execute("SELECT ext_id FROM listings WHERE source='reality'").fetchall()}
-    pages = 40 if full else 4
-    new = []
+    full = (mode == "full")
+    newest = 4
+    new, still = [], []
     for cat, ptype in REALITY:
-        for p in range(pages):
+        p = 0
+        while p < (40 if full else 300):
+            if mode == "delta" and p >= newest: break
+            if mode == "rolling" and p >= newest and p % 7 != day_index:
+                p += 1; continue
             urls = reality_search_urls(cat, p)
-            fresh = [(u, e, ptype) for (u, e) in urls if e not in seen]
+            if stat is not None: stat["pages"] = stat.get("pages", 0) + 1
             if not urls and p > 0: break
-            new += fresh
+            new += [(u, e, ptype) for (u, e) in urls if e not in seen]
+            still += [e for (u, e) in urls if e in seen]
             time.sleep(1.2)
+            p += 1
+    bump_seen(c, "reality", still, date.today().isoformat())
+    if stat is not None: stat["seen"] = len(set(still))
     cap = 800 if full else 200   # detail = 1 request/inzerát → obmedz na dávku
     out = []
     for i, (u, e, ptype) in enumerate(new[:cap]):
@@ -201,7 +233,8 @@ def crawl_reality(c, full):
         if r: out.append(r)
         if i and i % 50 == 0: print(f"  reality detaily {i}/{min(cap, len(new))}")
         time.sleep(0.8)
-    print(f"  reality.sk: {len(out)} nových inzerátov (z {len(new)} nájdených URL)")
+    print(f"  reality.sk: {len(out)} nových inzerátov (z {len(new)} nájdených URL), potvrdených {len(set(still))}")
+    if stat is not None: stat["rows"] = len(out)
     return out
 
 # ——— zoznamrealit.sk (detail má JSON-LD Product; cena €/m² pri pozemkoch, celková pri bytoch/domoch) ———
@@ -279,10 +312,21 @@ def db():
         try: c.execute(f"ALTER TABLE geocode ADD COLUMN {col} TEXT")
         except Exception: pass
     # removed_at = dátum, keď re-verify zistil 301 (vymazané); last_checked = kedy sme URL naposledy preverili
-    for col in ("removed_at", "last_checked"):
+    # okres/kraj priamo z portálu (nehnutelnosti/topreality/zoznamrealit ich uvádzajú) — presnejšie než geokód obce
+    for col in ("removed_at", "last_checked", "okres", "kraj"):
         try: c.execute(f"ALTER TABLE listings ADD COLUMN {col} TEXT")
         except Exception: pass
+    c.execute("CREATE INDEX IF NOT EXISTS ix_listings_seen ON listings(last_seen)")
     return c
+
+def bump_seen(c, source, ext_ids, today):
+    """Inzerát videný na zozname, ktorý už poznáme a nemáme k nemu nový riadok → len potvrď, že žije."""
+    ids = list(dict.fromkeys(ext_ids))
+    for i in range(0, len(ids), 500):
+        part = ids[i:i + 500]
+        c.execute(f"UPDATE listings SET last_seen=?, removed_at=NULL WHERE source=? AND ext_id IN ({','.join('?' * len(part))})",
+                  [today, source, *part])
+    c.commit()
 
 def _norm_okres(county):
     o = (county or "").strip()
@@ -302,7 +346,7 @@ def geocode(c, obec):
         import urllib.parse
         u = "https://nominatim.openstreetmap.org/search?" + urllib.parse.urlencode(
             {"q": obec + ", Slovensko", "format": "jsonv2", "addressdetails": 1, "limit": 1})
-        req = urllib.request.Request(u, headers={"User-Agent": "tri-lipy-scraper/1.0 (kristiak.bohus@gmail.com)"})
+        req = urllib.request.Request(u, headers={"User-Agent": GEO_UA})
         with urllib.request.urlopen(req, timeout=15) as resp:
             arr = json.loads(resp.read().decode("utf-8", "replace"))
             if arr:
@@ -316,22 +360,56 @@ def geocode(c, obec):
     c.execute("INSERT OR REPLACE INTO geocode(obec,lat,lng,okres,kraj) VALUES(?,?,?,?,?)", (obec, lat, lng, okres, kraj)); c.commit()
     return (lat, lng, okres, kraj)
 
+def geocode_ok(c, obec, okres, allow_net):
+    """(lat,lng,okres,kraj), počet sieťových dopytov. Pri známom okrese sa hľadá „obec, okres X" (rovnaké
+    názvy obcí v rôznych okresoch); cache kľúč „obec|okres". Bez rozpočtu len z cache."""
+    if not okres:
+        r = c.execute("SELECT lat,lng,okres,kraj FROM geocode WHERE obec=?", (obec,)).fetchone()
+        if r or not allow_net: return (tuple(r) if r else (None, None, None, None)), 0
+        return geocode(c, obec), 1
+    key = f"{obec}|{okres}"
+    r = c.execute("SELECT lat,lng,okres,kraj FROM geocode WHERE obec=?", (key,)).fetchone()
+    if r: return tuple(r), 0
+    r = c.execute("SELECT lat,lng,okres,kraj FROM geocode WHERE obec=?", (obec,)).fetchone()
+    if r and r[0] is not None and (r[2] or "") == okres: return tuple(r), 0   # plain cache sedí s okresom
+    if not allow_net: return (None, None, okres, None), 0
+    lat = lng = kraj = None
+    try:
+        import urllib.parse
+        u = "https://nominatim.openstreetmap.org/search?" + urllib.parse.urlencode(
+            {"q": f"{obec}, okres {okres}, Slovensko", "format": "jsonv2", "addressdetails": 1, "limit": 1})
+        req = urllib.request.Request(u, headers={"User-Agent": GEO_UA})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            arr = json.loads(resp.read().decode("utf-8", "replace"))
+            if arr:
+                lat = float(arr[0]["lat"]); lng = float(arr[0]["lon"])
+                ad = arr[0].get("address", {}) or {}
+                kraj = re.sub(r"\s*kraj$", "", (ad.get("region") or ad.get("state") or ""), flags=re.I).strip() or None
+        time.sleep(1.1)
+    except Exception as e:
+        print(f"  geocode fail {key}: {e}", file=sys.stderr)
+    c.execute("INSERT OR REPLACE INTO geocode(obec,lat,lng,okres,kraj) VALUES(?,?,?,?,?)", (key, lat, lng, okres, kraj)); c.commit()
+    return (lat, lng, okres, kraj), 1
+
 def upsert(c, rows, today):
     for r in rows:
         ex = c.execute("SELECT price_eur FROM listings WHERE source=? AND ext_id=?", (r["source"], r["ext_id"])).fetchone()
         if ex:
             old_price = ex[0]
-            c.execute("UPDATE listings SET url=?,title=?,ptype=?,obec=?,psc=?,area_m2=?,price_eur=?,ppm2=?,last_seen=? WHERE source=? AND ext_id=?",
-                      (r["url"], r["title"], r["ptype"], r["obec"], r["psc"], r["area_m2"], r["price_eur"], r["ppm2"], today, r["source"], r["ext_id"]))
+            c.execute("UPDATE listings SET url=?,title=?,ptype=?,obec=?,psc=?,area_m2=?,price_eur=?,ppm2=?,last_seen=?,removed_at=NULL,"
+                      "okres=COALESCE(?,okres),kraj=COALESCE(?,kraj) WHERE source=? AND ext_id=?",
+                      (r["url"], r["title"], r["ptype"], r["obec"], r["psc"], r["area_m2"], r["price_eur"], r["ppm2"], today,
+                       r.get("okres"), r.get("kraj"), r["source"], r["ext_id"]))
             # price_history: snímka LEN pri zmene ceny (per-inzerát krivka pohybu ceny v čase)
             if r["price_eur"] is not None and old_price is not None and abs(float(r["price_eur"]) - float(old_price)) > 0.5:
                 c.execute("INSERT OR REPLACE INTO price_history(source,ext_id,day,price_eur,ppm2) VALUES(?,?,?,?,?)",
                           (r["source"], r["ext_id"], today, r["price_eur"], r["ppm2"]))
         else:
-            c.execute("INSERT INTO listings(source,ext_id,url,title,ptype,deal,obec,psc,area_m2,price_eur,ppm2,first_seen,last_seen,first_price) "
-                      "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            c.execute("INSERT INTO listings(source,ext_id,url,title,ptype,deal,obec,psc,area_m2,price_eur,ppm2,first_seen,last_seen,first_price,okres,kraj) "
+                      "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                       (r["source"], r["ext_id"], r["url"], r["title"], r["ptype"], r["deal"], r["obec"], r["psc"],
-                       r["area_m2"], r["price_eur"], r["ppm2"], r.get("listed") or today, today, r["price_eur"]))
+                       r["area_m2"], r["price_eur"], r["ppm2"], r.get("listed") or today, today, r["price_eur"],
+                       r.get("okres"), r.get("kraj")))
             # počiatočná snímka ceny
             if r["price_eur"] is not None:
                 c.execute("INSERT OR REPLACE INTO price_history(source,ext_id,day,price_eur,ppm2) VALUES(?,?,?,?,?)",
@@ -375,10 +453,29 @@ def reverify_gone(c, today, cap=None):
     print(f"  re-verify: {gone+alive+errs} preverených → {gone} vymazaných, {alive} žije, {errs} chýb/preskočené")
     return gone
 
+ACTIVE_DAYS = 21   # „aktívny" = videný za posledné 3 týždne (pri týždennej obmene sa aktívny uvidí ≥3×)
+
+def _dedup_key(obec, pt, dl, area, price):
+    o = re.sub(r"[^a-z0-9]", "", (obec or "").lower())
+    return (o, pt, dl, round((area or 0) / 10), round((price or 0) / 1000))
+
 def build_market_data(c, today):
-    rows = c.execute("SELECT ptype,deal,obec,area_m2,price_eur,ppm2,first_seen,last_seen,first_price,url,title FROM listings WHERE ppm2 IS NOT NULL AND obec IS NOT NULL").fetchall()
+    # LEN aktívne inzeráty (nezmazané, videné za ACTIVE_DAYS). Dovtedy sa mediány aj príležitosti
+    # počítali zo VŠETKÝCH inzerátov, aké kedy boli videné — aj z mesiace mŕtvych a zmazaných
+    # (151 z 300 príležitostí bolo naposledy videných 20. 9.).
+    raw = c.execute(
+        "SELECT ptype,deal,obec,area_m2,price_eur,ppm2,first_seen,last_seen,first_price,url,title,source FROM listings "
+        "WHERE ppm2 IS NOT NULL AND obec IS NOT NULL AND removed_at IS NULL AND last_seen >= date(?, ?) "
+        "ORDER BY CASE source WHEN 'nehnutelnosti' THEN 0 WHEN 'topreality' THEN 1 WHEN 'reality' THEN 2 ELSE 3 END",
+        (today, f"-{ACTIVE_DAYS} day")).fetchall()
+    # ten istý inzerát na viacerých portáloch sa ráta raz (obec + typ + výmera ~10 m² + cena ~1 000 €)
+    seen_k, rows = set(), []
+    for r in raw:
+        k = _dedup_key(r[2], r[0], r[1], r[3], r[4])
+        if k in seen_k: continue
+        seen_k.add(k); rows.append(r)
     groups = {}
-    for pt, dl, obec, area, price, ppm2, fs, ls, fp, url, title in rows:
+    for pt, dl, obec, area, price, ppm2, fs, ls, fp, url, title, src in rows:
         groups.setdefault((obec, pt, dl), []).append(ppm2)
     index, med_by = [], {}
     for (obec, pt, dl), vals in groups.items():
@@ -388,7 +485,9 @@ def build_market_data(c, today):
         index.append(dict(okres=obec, obec=None, ptype=pt, deal=dl, day=today,
                           median=round(med, 1), p25=round(vals[len(vals)//4], 1), p75=round(vals[3*len(vals)//4], 1), cnt=len(vals)))
     opps = []
-    for pt, dl, obec, area, price, ppm2, fs, ls, fp, url, title in rows:
+    for pt, dl, obec, area, price, ppm2, fs, ls, fp, url, title, src in rows:
+        if ls < today and (datetime.fromisoformat(today) - datetime.fromisoformat(ls)).days > 7:
+            continue                                   # príležitosť len z inzerátu videného tento týždeň
         flags = []
         drop = round((fp - price) / fp * 100, 1) if fp and price and fp > price else 0
         try: dom = (datetime.fromisoformat(today) - datetime.fromisoformat(fs)).days if fs else 0
@@ -405,12 +504,13 @@ def build_market_data(c, today):
         if dom >= 90 and price_ok: flags.append("long")
         if below >= 15: flags.append("below")
         if flags and price_ok:
-            opps.append(dict(source="bazos", ext_id=None, url=url, title=title, ptype=pt, deal=dl,
+            opps.append(dict(source=src, ext_id=None, url=url, title=title, ptype=pt, deal=dl,
                              okres=obec, obec=obec, area=area, price=price, ppm2=ppm2,
                              first_seen=fs, last_seen=ls, dom=dom, drop_pct=drop, below_pct=below, flags=",".join(flags)))
     opps.sort(key=lambda o: (o["below_pct"] + o["drop_pct"]), reverse=True)
     return dict(generated=today, index=index, opportunities=opps[:300],
-                meta=dict(generated=today, counts=dict(listings=len(rows), index=len(index), opps=len(opps))))
+                meta=dict(generated=today, counts=dict(listings=len(rows), index=len(index), opps=len(opps)),
+                          active_days=ACTIVE_DAYS, dedup_removed=len(raw) - len(rows)))
 
 def notify_price_alerts(data, limit=10):
     """Telegram alert na NOVÉ cenové pohyby (pokles / výrazne pod mediánom).
@@ -454,7 +554,8 @@ def notify_price_alerts(data, limit=10):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--mode", choices=["delta", "full"], default="delta")
+    ap.add_argument("--mode", choices=["delta", "full", "rolling"], default="delta")
+    ap.add_argument("--only", default="", help="čiarkou oddelené zdroje (test): bazos,reality,nehnutelnosti,topreality,zoznamrealit")
     ap.add_argument("--test", action="store_true")
     a = ap.parse_args()
     today = date.today().isoformat()
@@ -464,9 +565,49 @@ def main():
         for g in got[:4]: print("  ", {k: g[k] for k in ("title", "obec", "psc", "area_m2", "price_eur", "ppm2", "listed")})
         return
     c = db()
-    full = (a.mode == "full")
-    rows = crawl_bazos(full=full) + crawl_reality(c, full=full)
-    # crawl_zoznam(c, full) — DOČASNE VYPNUTÉ: nekonzistentné názvy (| vs ,) → nespoľahlivá lokalita; treba doladiť
+    t0 = time.time()
+    day_index = date.today().toordinal() % 7
+    only = {x.strip() for x in a.only.split(",") if x.strip()}
+    want = lambda name: not only or name in only
+    report = {"date": today, "mode": a.mode, "day_index": day_index, "sources": {}}
+
+    def run(name, fn):
+        st = {"pages": 0, "rows": 0}
+        t = time.time()
+        try:
+            got = fn(st)
+        except Exception as e:                       # jeden zdroj nezhodí celý beh
+            print(f"  {name} ZLYHAL: {e}", file=sys.stderr)
+            st["error"] = str(e)[:200]; got = []
+        st["seconds"] = round(time.time() - t)
+        report["sources"][name] = st
+        return got
+
+    rows = []
+    if want("bazos"):
+        rows += run("bazos", lambda st: crawl_bazos(a.mode, day_index, st))
+    if want("reality"):
+        rows += run("reality", lambda st: crawl_reality(c, a.mode, day_index, st))
+    if a.mode != "full":
+        import portals
+        okk = portals.okres_kraj_map()
+        def portal(name, fn):
+            def go(st):
+                got, seen, pst = fn()
+                st.update(pst)
+                if seen: bump_seen(c, name, seen, today)
+                return got
+            return run(name, go)
+        if want("nehnutelnosti"):
+            rows += portal("nehnutelnosti", lambda: portals.crawl_nehnutelnosti(day_index, refine_ptype))
+        if want("topreality"):
+            rows += portal("topreality", lambda: portals.crawl_topreality(day_index, refine_ptype, okk))
+        if want("zoznamrealit"):
+            known = {r[0] for r in c.execute("SELECT ext_id FROM listings WHERE source='zoznamrealit'")}
+            rows += portal("zoznamrealit", lambda: portals.crawl_zoznamrealit(day_index, refine_ptype, known, okk))
+    for k, v in report["sources"].items():
+        print(f"  [{k}] strán {v.get('pages')} · inzerátov {v.get('rows')} · potvrdených {v.get('seen', 0)}"
+              f"{' · BLOKOVANÉ: ' + v['blocked'] if v.get('blocked') else ''}{' · CHYBA' if v.get('error') else ''} · {v['seconds']} s")
     upsert(c, rows, today)
     try:                                    # re-verify: označ vymazané (301) + potvrď žijúce (bump last_seen)
         reverify_gone(c, today)
@@ -481,9 +622,19 @@ def main():
         print(f"  trendy fail: {e}", file=sys.stderr)
     data = build_market_data(c, today)
     data["mode"] = a.mode
+    report["active_listings"] = data["meta"]["counts"]["listings"]
+    report["seen_today"] = c.execute("SELECT COUNT(*) FROM listings WHERE last_seen=?", (today,)).fetchone()[0]
+    report["new_today"] = c.execute("SELECT COUNT(*) FROM listings WHERE first_seen=?", (today,)).fetchone()[0]
+    report["by_source_active"] = dict(c.execute(
+        "SELECT source, COUNT(*) FROM listings WHERE removed_at IS NULL AND last_seen >= date(?, ?) GROUP BY source",
+        (today, f"-{ACTIVE_DAYS} day")).fetchall())
     data["listings_chunks"] = write_listings_chunks(c, today)
     data["pricehistory_chunks"] = write_price_history_chunks(c)
     json.dump(data, open(OUT, "w", encoding="utf-8"), ensure_ascii=False)
+    report["seconds"] = round(time.time() - t0)
+    report["chunks"] = data["listings_chunks"]
+    # report behu ide do repa (verejne čitateľný) — bez neho sa dalo zistiť stav zberu len z logov
+    json.dump(report, open(os.path.join(DIR, "scrape-report.json"), "w", encoding="utf-8"), ensure_ascii=False, indent=1)
     print(f"Hotovo: {data['meta']['counts']}, chunkov {data['listings_chunks']} → {OUT}")
     # TG alerty scrapera vypnuté — konsolidované do jedného ranného brífingu (deal_radar_tg.py --digest).
     # Zapnú sa len s explicitným --tg.
@@ -493,15 +644,18 @@ def main():
 
 def write_listings_chunks(c, today, size=3000):
     """Všetky dnes videné inzeráty (s lat/lng z geokódu obce) → market-listings-<i>.json chunky."""
-    rows = c.execute("SELECT source,ext_id,url,title,ptype,deal,obec,psc,area_m2,price_eur,ppm2,first_seen,last_seen,first_price,removed_at FROM listings WHERE last_seen=? OR removed_at=?", (today, today)).fetchall()
-    obce = sorted({r[6] for r in rows if r[6]})
+    rows = c.execute("SELECT source,ext_id,url,title,ptype,deal,obec,psc,area_m2,price_eur,ppm2,first_seen,last_seen,first_price,removed_at,okres,kraj FROM listings WHERE last_seen=? OR removed_at=?", (today, today)).fetchall()
+    pairs = sorted({(r[6], r[15]) for r in rows if r[6]}, key=lambda x: (x[0], x[1] or ""))
     geo = {}
-    for i, ob in enumerate(obce):
-        geo[ob] = geocode(c, ob)
-        if i and i % 25 == 0: print(f"  geokódujem obce {i}/{len(obce)}")
+    budget = int(os.environ.get("GEOCODE_BUDGET", "400"))   # nové dopyty na Nominatim za beh (1/s); zvyšok ďalší deň
+    for i, (ob, ok) in enumerate(pairs):
+        geo[(ob, ok)], used = geocode_ok(c, ob, ok, budget > 0)
+        budget -= used
+        if i and i % 200 == 0: print(f"  geokód obcí {i}/{len(pairs)} (zostáva dopytov {max(budget, 0)})")
     out = []
     for r in rows:
-        la, ln, okres, kraj = geo.get(r[6], (None, None, None, None))
+        la, ln, g_okres, g_kraj = geo.get((r[6], r[15]), (None, None, None, None))
+        okres, kraj = r[15] or g_okres, r[16] or g_kraj
         fp, pr = r[13], r[9]
         drop = round((fp - pr) / fp * 100, 1) if fp and pr and fp > pr else 0
         flags = ["drop"] if drop >= 5 else []
@@ -512,7 +666,7 @@ def write_listings_chunks(c, today, size=3000):
     for i in range(0, len(out), size):
         json.dump(out[i:i + size], open(os.path.join(DIR, f"market-listings-{n}.json"), "w", encoding="utf-8"), ensure_ascii=False)
         n += 1
-    print(f"  inzerátov {len(out)} v {n} chunkoch (geokódovaných obcí {len(obce)})")
+    print(f"  inzerátov {len(out)} v {n} chunkoch (obcí {len(pairs)})")
     return n
 
 def write_price_history_chunks(c, size=5000):
