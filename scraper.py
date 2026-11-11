@@ -62,7 +62,7 @@ def fetch(url, tries=3):
         except Exception as e:
             if i == tries - 1:
                 print(f"  fetch fail {url}: {e}", file=sys.stderr); return ""
-            time.sleep(2)
+            time.sleep(5 * (i + 1))
     return ""
 
 AREA_RE = re.compile(r"(\d[\d\s]{1,7})\s*(?:m2|m²)", re.I)
@@ -136,6 +136,7 @@ def crawl_bazos(mode, day_index=0, stat=None):
     for seg, ptype, deal in BAZOS:
         before = len(all_l)
         p = 0
+        err_run = 0
         while p < 1000:
             if mode == "delta" and p >= newest:
                 break
@@ -143,8 +144,17 @@ def crawl_bazos(mode, day_index=0, stat=None):
                 p += 1
                 continue
             url = f"{BASE}{seg}/{p*20}/" if p else f"{BASE}{seg}/"
-            got = parse_bazos(fetch(url), ptype, deal)
+            html = fetch(url)
             if stat is not None: stat["pages"] = stat.get("pages", 0) + 1
+            if not html:
+                # výpadok stránky ≠ koniec katalógu (dovtedy sa kategória pri prvej chybe ticho ukončila)
+                if stat is not None: stat["errors"] = stat.get("errors", 0) + 1
+                err_run += 1
+                if err_run >= 5:
+                    print(f"  bazos {seg}: 5 chýb po sebe na strane {p} — kategóriu ukončujem", file=sys.stderr); break
+                time.sleep(10); p += 1; continue
+            err_run = 0
+            got = parse_bazos(html, ptype, deal)
             if not got and p > 0: break
             all_l += got
             time.sleep(1.3)
@@ -158,8 +168,11 @@ REALITY = [("pozemky", "pozemok"), ("domy", "dom"), ("byty", "byt")]
 JSONLD = re.compile(r'<script type="application/ld\+json">(.*?)</script>', re.S)
 
 def reality_search_urls(cat, page):
+    """Zoznam (url, ext_id); None = stránku sa nepodarilo načítať (≠ prázdna stránka za koncom)."""
     url = f"https://www.reality.sk/{cat}/predaj/" + (f"?page={page+1}" if page else "")
     h = fetch(url)
+    if not h:
+        return None
     out = []
     for b in JSONLD.findall(h):
         if "itemListElement" not in b: continue
@@ -213,12 +226,19 @@ def crawl_reality(c, mode, day_index=0, stat=None):
     new, still = [], []
     for cat, ptype in REALITY:
         p = 0
+        err_run = 0
         while p < (40 if full else 300):
             if mode == "delta" and p >= newest: break
             if mode == "rolling" and p >= newest and p % 7 != day_index:
                 p += 1; continue
             urls = reality_search_urls(cat, p)
             if stat is not None: stat["pages"] = stat.get("pages", 0) + 1
+            if urls is None:
+                if stat is not None: stat["errors"] = stat.get("errors", 0) + 1
+                err_run += 1
+                if err_run >= 5: break
+                time.sleep(10); p += 1; continue
+            err_run = 0
             if not urls and p > 0: break
             new += [(u, e, ptype) for (u, e) in urls if e not in seen]
             still += [e for (u, e) in urls if e in seen]
@@ -633,6 +653,8 @@ def main():
     json.dump(data, open(OUT, "w", encoding="utf-8"), ensure_ascii=False)
     report["seconds"] = round(time.time() - t0)
     report["chunks"] = data["listings_chunks"]
+    report["problems"] = health_problems(report)
+    report["ok"] = not report["problems"]
     # report behu ide do repa (verejne čitateľný) — bez neho sa dalo zistiť stav zberu len z logov
     json.dump(report, open(os.path.join(DIR, "scrape-report.json"), "w", encoding="utf-8"), ensure_ascii=False, indent=1)
     print(f"Hotovo: {data['meta']['counts']}, chunkov {data['listings_chunks']} → {OUT}")
@@ -641,6 +663,28 @@ def main():
     if "--tg" in sys.argv:
         notify_price_alerts(data)
     publish()
+
+# Prahy zdravia behu (rolling, celé SR). Pod nimi niečo nie je v poriadku — pošle sa varovanie do Telegramu.
+MIN_ROWS = {"bazos": 3000, "nehnutelnosti": 1500, "topreality": 1500, "reality": 1, "zoznamrealit": 1}
+MIN_SEEN_TODAY = 8000
+
+def health_problems(report):
+    """Zoznam problémov behu (prázdny = v poriadku). Číta ho workflow a pri probléme pošle Telegram."""
+    out = []
+    if report.get("mode") != "rolling":
+        return out
+    for name, st in report.get("sources", {}).items():
+        if st.get("blocked"):
+            out.append(f"{name}: portál zablokoval prístup ({st['blocked']})")
+        elif st.get("error"):
+            out.append(f"{name}: zlyhal ({st['error'][:120]})")
+        elif (st.get("rows") or 0) + (st.get("seen") or 0) < MIN_ROWS.get(name, 1):
+            out.append(f"{name}: len {(st.get('rows') or 0) + (st.get('seen') or 0)} inzerátov (očakávané ≥ {MIN_ROWS.get(name, 1)})")
+        if (st.get("errors") or 0) >= 20:
+            out.append(f"{name}: {st['errors']} stránok sa nepodarilo načítať")
+    if (report.get("seen_today") or 0) < MIN_SEEN_TODAY:
+        out.append(f"dnes videných len {report.get('seen_today')} inzerátov (očakávané ≥ {MIN_SEEN_TODAY})")
+    return out
 
 def write_listings_chunks(c, today, size=3000):
     """Všetky dnes videné inzeráty (s lat/lng z geokódu obce) → market-listings-<i>.json chunky."""

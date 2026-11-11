@@ -83,17 +83,28 @@ class Blocked(Exception):
     pass
 
 
-def fetch(url, timeout=30):
-    """Vráti (status, html). Pri 403/429/503 alebo stránke s overením „nie som robot" hodí Blocked."""
+def fetch(url, timeout=30, tries=3):
+    """Vráti (status, html). Pri 403/429 alebo stránke s overením „nie som robot" hodí Blocked.
+    Výpadok spojenia / 5xx sa skúsi znova (3×, čakanie 5 s, 15 s) — jeden výpadok nesmie stratiť okres."""
     req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept-Language": "sk", "Accept": "text/html"})
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            h = r.read().decode("utf-8", "replace")
-            st = r.status
-    except urllib.error.HTTPError as e:
-        if e.code in (403, 429, 503):
-            raise Blocked(f"HTTP {e.code}")
-        return e.code, ""
+    for i in range(tries):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                h = r.read().decode("utf-8", "replace")
+                st = r.status
+            break
+        except urllib.error.HTTPError as e:
+            if e.code in (403, 429):
+                raise Blocked(f"HTTP {e.code}")
+            if e.code >= 500 and i < tries - 1:
+                time.sleep(5 + 10 * i); continue
+            if e.code == 503:
+                raise Blocked("HTTP 503")
+            return e.code, ""
+        except Exception:  # noqa: BLE001 — timeout, reset spojenia, DNS
+            if i < tries - 1:
+                time.sleep(5 + 10 * i); continue
+            return 0, ""
     low = h[:4000].lower()
     if ("captcha" in low or "challenge-platform" in low or "cf-chl" in low) and len(h) < 60000:
         raise Blocked("stránka s overením (captcha/challenge)")
