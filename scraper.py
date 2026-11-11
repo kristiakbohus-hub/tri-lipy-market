@@ -25,7 +25,7 @@ Len stdlib — beží aj cez launchd bez pip.
 STAV: bazos.sk funguje (jednoduché HTML, obec+PSČ+dátum priamo v inzeráte).
 nehnutelnosti.sk/reality.sk načítavajú cez JS/API — doplniť v ďalšej iterácii.
 """
-import argparse, json, os, re, sqlite3, statistics, sys, time, urllib.request
+import argparse, json, os, re, sqlite3, statistics, sys, time, unicodedata, urllib.request
 from datetime import date, datetime
 from html import unescape
 
@@ -53,7 +53,21 @@ BAZOS = [
 BASE = "https://reality.bazos.sk/"
 GEO_UA = "tri-lipy-scraper/1.1 (+https://github.com/kristiakbohus-hub/tri-lipy-market)"   # Nominatim: identifikácia aplikácie
 
+# ČASOVÝ STROP (2026-11-11): prvý týždenný beh trval > 2 h a job má limit 150 min — pri prekročení GitHub
+# job zruší BEZ uloženia, commitu aj ingestu (a „failure" hlásenie sa pri zrušení nepošle). Po DEADLINE sa
+# ďalšie stránky nesťahujú (zvyšok obmeny príde v ďalšom behu), HARD_DEADLINE ukončí aj re-verify.
+DEADLINE = None
+HARD_DEADLINE = None
+
+
+def out_of_time(hard=False):
+    t = HARD_DEADLINE if hard else DEADLINE
+    return t is not None and time.time() > t
+
+
 def fetch(url, tries=3):
+    if out_of_time():
+        return ""
     for i in range(tries):
         try:
             req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept-Language": "sk"})
@@ -138,6 +152,9 @@ def crawl_bazos(mode, day_index=0, stat=None):
         p = 0
         err_run = 0
         while p < 1000:
+            if out_of_time():
+                if stat is not None: stat["stopped"] = "časový strop — zvyšok obmeny v ďalšom behu"
+                break
             if mode == "delta" and p >= newest:
                 break
             if mode == "rolling" and p >= newest and p % 7 != day_index:
@@ -228,6 +245,9 @@ def crawl_reality(c, mode, day_index=0, stat=None):
         p = 0
         err_run = 0
         while p < (40 if full else 300):
+            if out_of_time():
+                if stat is not None: stat["stopped"] = "časový strop — zvyšok obmeny v ďalšom behu"
+                break
             if mode == "delta" and p >= newest: break
             if mode == "rolling" and p >= newest and p % 7 != day_index:
                 p += 1; continue
@@ -249,6 +269,7 @@ def crawl_reality(c, mode, day_index=0, stat=None):
     cap = 800 if full else 200   # detail = 1 request/inzerát → obmedz na dávku
     out = []
     for i, (u, e, ptype) in enumerate(new[:cap]):
+        if out_of_time(): break
         r = parse_reality_detail(u, e, ptype)
         if r: out.append(r)
         if i and i % 50 == 0: print(f"  reality detaily {i}/{min(cap, len(new))}")
@@ -411,14 +432,30 @@ def geocode_ok(c, obec, okres, allow_net):
     c.execute("INSERT OR REPLACE INTO geocode(obec,lat,lng,okres,kraj) VALUES(?,?,?,?,?)", (key, lat, lng, okres, kraj)); c.commit()
     return (lat, lng, okres, kraj), 1
 
+_DEMAND = re.compile(r"(hladam|hladame|kupim|kupime|zhanam|zhaname)")
+_NOT_DEMAND = re.compile(r"(najomc|najomnik|kupc|kupujuc|zaujemc)")
+_RENT = re.compile(r"(prenaj|podnaj|najom|spolubyv)")
+
+
+def demand_deal(title, deal):
+    """Inzerát „hľadám / kúpim" je DOPYT, nie ponuka (2026-11-11: ~100 z 13 956, z toho 25 dopytov na kúpu) —
+    kazil mediány €/m² a príležitosti. „Hľadáme nájomcu / kupca" je naopak ponuka. Rovnaké pravidlo má appka."""
+    t = unicodedata.normalize("NFD", title or "")
+    t = "".join(ch for ch in t if not unicodedata.combining(ch)).lower()
+    if _DEMAND.search(t) and not _NOT_DEMAND.search(t):
+        return "dopyt_najom" if _RENT.search(t) else "dopyt"
+    return deal
+
+
 def upsert(c, rows, today):
     for r in rows:
+        r["deal"] = demand_deal(r.get("title"), r.get("deal"))
         ex = c.execute("SELECT price_eur FROM listings WHERE source=? AND ext_id=?", (r["source"], r["ext_id"])).fetchone()
         if ex:
             old_price = ex[0]
-            c.execute("UPDATE listings SET url=?,title=?,ptype=?,obec=?,psc=?,area_m2=?,price_eur=?,ppm2=?,last_seen=?,removed_at=NULL,"
+            c.execute("UPDATE listings SET url=?,title=?,ptype=?,deal=?,obec=?,psc=?,area_m2=?,price_eur=?,ppm2=?,last_seen=?,removed_at=NULL,"
                       "okres=COALESCE(?,okres),kraj=COALESCE(?,kraj) WHERE source=? AND ext_id=?",
-                      (r["url"], r["title"], r["ptype"], r["obec"], r["psc"], r["area_m2"], r["price_eur"], r["ppm2"], today,
+                      (r["url"], r["title"], r["ptype"], r["deal"], r["obec"], r["psc"], r["area_m2"], r["price_eur"], r["ppm2"], today,
                        r.get("okres"), r.get("kraj"), r["source"], r["ext_id"]))
             # price_history: snímka LEN pri zmene ceny (per-inzerát krivka pohybu ceny v čase)
             if r["price_eur"] is not None and old_price is not None and abs(float(r["price_eur"]) - float(old_price)) > 0.5:
@@ -457,6 +494,8 @@ def reverify_gone(c, today, cap=None):
     gone = alive = errs = 0
     miss = 0                      # po sebe idúce ne-(200/301) → možný rate-limit → stop
     for src, ext, url in rows:
+        if out_of_time(hard=True):
+            print("  re-verify: časový strop — zvyšok pri ďalšom behu", file=sys.stderr); break
         st = _status(url)
         if st in (301, 302, 303, 307, 308):
             c.execute("UPDATE listings SET removed_at=?, last_checked=? WHERE source=? AND ext_id=?", (today, today, src, ext)); gone += 1; miss = 0
@@ -506,6 +545,8 @@ def build_market_data(c, today):
                           median=round(med, 1), p25=round(vals[len(vals)//4], 1), p75=round(vals[3*len(vals)//4], 1), cnt=len(vals)))
     opps = []
     for pt, dl, obec, area, price, ppm2, fs, ls, fp, url, title, src in rows:
+        if dl in ("dopyt", "dopyt_najom"):
+            continue                                   # dopyt „hľadám / kúpim" nie je ponuka
         if ls < today and (datetime.fromisoformat(today) - datetime.fromisoformat(ls)).days > 7:
             continue                                   # príležitosť len z inzerátu videného tento týždeň
         flags = []
@@ -586,6 +627,11 @@ def main():
         return
     c = db()
     t0 = time.time()
+    global DEADLINE, HARD_DEADLINE
+    budget_min = float(os.environ.get("SCRAPE_BUDGET_MIN", "0") or 0)
+    if budget_min > 0:
+        DEADLINE = t0 + budget_min * 60
+        HARD_DEADLINE = DEADLINE + float(os.environ.get("REVERIFY_BUDGET_MIN", "10")) * 60
     day_index = date.today().toordinal() % 7
     only = {x.strip() for x in a.only.split(",") if x.strip()}
     want = lambda name: not only or name in only
@@ -610,6 +656,7 @@ def main():
         rows += run("reality", lambda st: crawl_reality(c, a.mode, day_index, st))
     if a.mode != "full":
         import portals
+        portals.DEADLINE = DEADLINE
         okk = portals.okres_kraj_map()
         def portal(name, fn):
             def go(st):
@@ -627,7 +674,7 @@ def main():
             rows += portal("zoznamrealit", lambda: portals.crawl_zoznamrealit(day_index, refine_ptype, known, okk))
     for k, v in report["sources"].items():
         print(f"  [{k}] strán {v.get('pages')} · inzerátov {v.get('rows')} · potvrdených {v.get('seen', 0)}"
-              f"{' · BLOKOVANÉ: ' + v['blocked'] if v.get('blocked') else ''}{' · CHYBA' if v.get('error') else ''} · {v['seconds']} s")
+              f"{' · BLOKOVANÉ: ' + v['blocked'] if v.get('blocked') else ''}{' · ZASTAVENÉ: ' + v['stopped'] if v.get('stopped') else ''}{' · CHYBA' if v.get('error') else ''} · {v['seconds']} s")
     upsert(c, rows, today)
     try:                                    # re-verify: označ vymazané (301) + potvrď žijúce (bump last_seen)
         reverify_gone(c, today)
@@ -674,6 +721,8 @@ def health_problems(report):
     if report.get("mode") != "rolling":
         return out
     for name, st in report.get("sources", {}).items():
+        if st.get("stopped"):
+            continue                       # zastavené časovým stropom = plán, nie chyba (zvyšok v ďalšom behu)
         if st.get("blocked"):
             out.append(f"{name}: portál zablokoval prístup ({st['blocked']})")
         elif st.get("error"):
@@ -682,7 +731,8 @@ def health_problems(report):
             out.append(f"{name}: len {(st.get('rows') or 0) + (st.get('seen') or 0)} inzerátov (očakávané ≥ {MIN_ROWS.get(name, 1)})")
         if (st.get("errors") or 0) >= 20:
             out.append(f"{name}: {st['errors']} stránok sa nepodarilo načítať")
-    if (report.get("seen_today") or 0) < MIN_SEEN_TODAY:
+    stopped = any(st.get("stopped") for st in report.get("sources", {}).values())
+    if (report.get("seen_today") or 0) < MIN_SEEN_TODAY and not stopped:
         out.append(f"dnes videných len {report.get('seen_today')} inzerátov (očakávané ≥ {MIN_SEEN_TODAY})")
     return out
 
