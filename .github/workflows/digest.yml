@@ -1,0 +1,28 @@
+name: Ranný súhrn (Telegram) — záloha za Mac
+
+# Primárne posiela Mac o 7:30 (launchd sk.trilipy.tgdigest). Tento workflow je ZÁLOHA, keď je Mac
+# vypnutý: appka ho pustí až od 7:45 miestneho času a len ak súhrn ešte nikto neposlal → nikdy 2×.
+# Viac termínov, lebo GitHub plánované behy mešká a občas vynechá; po odoslaní sú ďalšie termíny prázdne.
+on:
+  schedule:
+    - cron: "50 6 * * *"     # 07:50 SEČ / 08:50 SELČ
+    - cron: "40 7 * * *"
+    - cron: "30 9 * * *"
+    - cron: "0 12 * * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  digest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pošli ranný súhrn, ak ho Mac neposlal
+        env:
+          ALERT_SECRET: ${{ secrets.ALERT_SECRET }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python3 digest.py
