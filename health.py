@@ -45,8 +45,11 @@ def main(argv):
         _tg("⚠️ Zber inzercie: chýba report behu (scrape-report.json).")
         return 0
     src = r.get("sources", {})
-    lines = [f"{k}: {v.get('rows', 0)} nových/zmenených, {v.get('seen', 0)} potvrdených, {v.get('pages', 0)} strán, {v.get('seconds', 0)} s"
+    lines = [f"{k}: {v.get('rows', 0)} nových/zmenených, {v.get('seen', 0)} potvrdených, {v.get('pages', 0)} strán, "
+             f"chybovosť {v.get('error_rate', 0)} %, {v.get('seconds', 0)} s"
+             + (" — ZASTAVENÉ časovým stropom" if v.get("stopped") else "")
              for k, v in src.items()]
+    info = r.get("info") or []          # zastavené / prechodné chyby pod prahom — len do súhrnu, NIE do Telegramu
     summary = (f"Zber inzercie {r.get('date')}: dnes videných {r.get('seen_today')}, nových {r.get('new_today')}, "
                f"aktívnych {r.get('active_listings')}, trvanie {round((r.get('seconds') or 0) / 60)} min")
     step = os.environ.get("GITHUB_STEP_SUMMARY")
@@ -55,9 +58,13 @@ def main(argv):
             f.write("### " + summary + "\n\n" + "\n".join(f"- {x}" for x in lines) + "\n")
             for p in r.get("problems") or []:
                 f.write(f"- ⚠️ {p}\n")
+            for p in info:
+                f.write(f"- ℹ️ {p}\n")
     print(summary)
     for x in lines:
         print("  " + x)
+    for x in info:
+        print("  info: " + x)
     probs = r.get("problems") or []
     if probs:
         _tg("⚠️ Zber inzercie — problém:\n" + "\n".join(f"• {p}" for p in probs) + "\n\n" + summary)
