@@ -74,7 +74,8 @@ jobs:
           REVERIFY_CAP: "800"
           GEOCODE_BUDGET: "400"
           # časový strop zberu: po 95 min sa ďalšie stránky nesťahujú (zvyšok obmeny v ďalšom behu), re-verify
-          # max. +10 min — zvyšok limitu jobu (150 min) ostane na uloženie, commit a ingest do appky
+          # max. +10 min, geokód obcí max. +8 min — zvyšok limitu jobu (150 min) ostane na uloženie, commit a ingest
+          # do appky. Odhad po 2026-11-11 (Bazoš krok 40, reality.sk bez detailov): zber ≈ 75–85 min.
           SCRAPE_BUDGET_MIN: "95"
           REVERIFY_BUDGET_MIN: "10"
         run: |
