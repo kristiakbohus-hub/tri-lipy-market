@@ -59,5 +59,6 @@
  "problems": [
   "bazos: 30 stránok sa nepodarilo načítať"
  ],
- "ok": false
+ "ok": false,
+ "ingested": true
 }
