@@ -1,39 +1,39 @@
 {
- "date": "2026-11-12",
+ "date": "2026-11-13",
  "mode": "rolling",
- "day_index": 4,
+ "day_index": 5,
  "sources": {
   "bazos": {
    "pages": 224,
-   "rows": 7395,
+   "rows": 7409,
    "errors": 0,
    "page_size": 40,
-   "seconds": 507,
+   "seconds": 454,
    "error_rate": 0.0
   },
   "nehnutelnosti": {
-   "pages": 341,
-   "rows": 8919,
+   "pages": 346,
+   "rows": 9079,
    "seen": 0,
    "errors": 0,
    "blocked": null,
    "capped": [],
-   "seconds": 2038,
+   "seconds": 1774,
    "error_rate": 0.0
   },
   "reality": {
-   "pages": 112,
-   "rows": 1789,
+   "pages": 159,
+   "rows": 1972,
    "errors": 0,
    "capped": [
-    "pozemky: 12551",
-    "domy: 14679",
-    "byty: 15843"
+    "pozemky: 12601",
+    "domy: 14746",
+    "byty: 15931"
    ],
-   "seen": 660,
-   "new": 1448,
-   "via_nehnutelnosti": 652,
-   "seconds": 559,
+   "seen": 1616,
+   "new": 1486,
+   "via_nehnutelnosti": 1608,
+   "seconds": 712,
    "error_rate": 0.0
   },
   "topreality": {
@@ -43,32 +43,32 @@
    "errors": 3,
    "blocked": null,
    "capped": [],
-   "seconds": 336,
+   "seconds": 335,
    "error_rate": 100.0
   },
   "zoznamrealit": {
    "pages": 70,
-   "rows": 231,
-   "seen": 75,
+   "rows": 223,
+   "seen": 145,
    "errors": 0,
    "blocked": null,
    "capped": [],
    "detail": 300,
-   "seconds": 779,
+   "seconds": 695,
    "error_rate": 0.0
   }
  },
- "active_listings": 28601,
- "seen_today": 19313,
- "new_today": 2210,
+ "active_listings": 34223,
+ "seen_today": 20444,
+ "new_today": 2164,
  "by_source_active": {
-  "bazos": 25097,
-  "nehnutelnosti": 13929,
-  "reality": 2594,
+  "bazos": 28115,
+  "nehnutelnosti": 20360,
+  "reality": 4226,
   "topreality": 11349,
-  "zoznamrealit": 481
+  "zoznamrealit": 704
  },
- "seconds": 6189,
+ "seconds": 5173,
  "chunks": 7,
  "problems": [
   "topreality: len 0 inzerátov (očakávané ≥ 1500)"
@@ -78,12 +78,11 @@
   "topreality: 3 prechodných chýb (100.0 %, prah 5 %)"
  ],
  "summary": [
-  "bazos: ok · 224 strán · 7395 inzerátov · 0 potvrdených · chybovosť 0.0 % · 8.4 min",
-  "nehnutelnosti: ok · 341 strán · 8919 inzerátov · 0 potvrdených · chybovosť 0.0 % · 34.0 min",
-  "reality: ok · 112 strán · 1789 inzerátov · 660 potvrdených · chybovosť 0.0 % · 9.3 min",
+  "bazos: ok · 224 strán · 7409 inzerátov · 0 potvrdených · chybovosť 0.0 % · 7.6 min",
+  "nehnutelnosti: ok · 346 strán · 9079 inzerátov · 0 potvrdených · chybovosť 0.0 % · 29.6 min",
+  "reality: ok · 159 strán · 1972 inzerátov · 1616 potvrdených · chybovosť 0.0 % · 11.9 min",
   "topreality: ok · 3 strán · 0 inzerátov · 0 potvrdených · chybovosť 100.0 % · 5.6 min",
-  "zoznamrealit: ok · 70 strán · 231 inzerátov · 75 potvrdených · chybovosť 0.0 % · 13.0 min"
+  "zoznamrealit: ok · 70 strán · 223 inzerátov · 145 potvrdených · chybovosť 0.0 % · 11.6 min"
  ],
- "ok": false,
- "ingested": true
+ "ok": false
 }
