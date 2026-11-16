@@ -1,89 +1,91 @@
 {
- "date": "2026-11-15",
+ "date": "2026-11-16",
  "mode": "rolling",
- "day_index": 0,
+ "day_index": 1,
  "sources": {
   "bazos": {
-   "pages": 219,
-   "rows": 7268,
+   "pages": 223,
+   "rows": 7387,
    "errors": 0,
    "page_size": 40,
-   "seconds": 417,
+   "seconds": 464,
    "error_rate": 0.0
   },
   "nehnutelnosti": {
-   "pages": 468,
-   "rows": 12731,
+   "pages": 358,
+   "rows": 9264,
    "seen": 0,
-   "errors": 0,
+   "errors": 2,
    "blocked": null,
-   "capped": [],
-   "seconds": 2266,
-   "error_rate": 0.0
+   "capped": [
+    "Bratislava II/byty/predaj: 1242",
+    "Bratislava II/domy/predaj: 67188",
+    "Dunajská Streda/domy/predaj: 1151"
+   ],
+   "seconds": 2562,
+   "error_rate": 0.6
   },
   "reality": {
-   "pages": 160,
-   "rows": 1145,
+   "pages": 100,
+   "rows": 448,
    "errors": 0,
    "capped": [
-    "pozemky: 12571",
-    "domy: 14727",
-    "byty: 15953"
+    "pozemky: 12559",
+    "domy: 14701",
+    "byty: 15961"
    ],
-   "seen": 2563,
-   "new": 750,
-   "via_nehnutelnosti": 2556,
-   "seconds": 721,
+   "seen": 1884,
+   "new": 281,
+   "via_nehnutelnosti": 1883,
+   "seconds": 531,
    "error_rate": 0.0
   },
   "topreality": {
-   "pages": 3,
-   "rows": 0,
+   "pages": 481,
+   "rows": 7646,
    "seen": 0,
-   "errors": 3,
+   "errors": 0,
    "blocked": null,
    "capped": [],
-   "seconds": 335,
-   "error_rate": 100.0
+   "seconds": 1213,
+   "error_rate": 0.0
   },
   "zoznamrealit": {
    "pages": 71,
-   "rows": 182,
-   "seen": 250,
+   "rows": 221,
+   "seen": 199,
    "errors": 0,
    "blocked": null,
    "capped": [],
    "detail": 300,
-   "seconds": 653,
+   "seconds": 727,
    "error_rate": 0.0
   }
  },
- "active_listings": 43105,
- "seen_today": 23970,
- "new_today": 1117,
+ "active_listings": 47766,
+ "seen_today": 27292,
+ "new_today": 7303,
  "by_source_active": {
-  "bazos": 32585,
-  "nehnutelnosti": 34780,
-  "reality": 6121,
-  "topreality": 11349,
-  "zoznamrealit": 1100
+  "bazos": 34671,
+  "nehnutelnosti": 41331,
+  "reality": 6410,
+  "topreality": 17546,
+  "zoznamrealit": 1321
  },
- "seconds": 5156,
- "chunks": 9,
- "problems": [
-  "topreality: len 0 inzerátov (očakávané ≥ 1500)"
- ],
+ "seconds": 6781,
+ "chunks": 10,
+ "problems": [],
  "info": [
-  "reality: portál ukáže len časť výsledkov — 3 hľadaní orezaných",
-  "topreality: 3 prechodných chýb (100.0 %, prah 5 %)"
+  "nehnutelnosti: 2 prechodných chýb (0.6 %, prah 5 %)",
+  "nehnutelnosti: portál ukáže len časť výsledkov — 3 hľadaní orezaných",
+  "reality: portál ukáže len časť výsledkov — 3 hľadaní orezaných"
  ],
  "summary": [
-  "bazos: ok · 219 strán · 7268 inzerátov · 0 potvrdených · chybovosť 0.0 % · 7.0 min",
-  "nehnutelnosti: ok · 468 strán · 12731 inzerátov · 0 potvrdených · chybovosť 0.0 % · 37.8 min",
-  "reality: ok · 160 strán · 1145 inzerátov · 2563 potvrdených · chybovosť 0.0 % · 12.0 min",
-  "topreality: ok · 3 strán · 0 inzerátov · 0 potvrdených · chybovosť 100.0 % · 5.6 min",
-  "zoznamrealit: ok · 71 strán · 182 inzerátov · 250 potvrdených · chybovosť 0.0 % · 10.9 min"
+  "bazos: ok · 223 strán · 7387 inzerátov · 0 potvrdených · chybovosť 0.0 % · 7.7 min",
+  "nehnutelnosti: ok · 358 strán · 9264 inzerátov · 0 potvrdených · chybovosť 0.6 % · 42.7 min",
+  "reality: ok · 100 strán · 448 inzerátov · 1884 potvrdených · chybovosť 0.0 % · 8.8 min",
+  "topreality: ok · 481 strán · 7646 inzerátov · 0 potvrdených · chybovosť 0.0 % · 20.2 min",
+  "zoznamrealit: ok · 71 strán · 221 inzerátov · 199 potvrdených · chybovosť 0.0 % · 12.1 min"
  ],
- "ok": false,
- "ingested": true
+ "ok": true
 }
