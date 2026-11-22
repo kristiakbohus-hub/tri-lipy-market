@@ -1,86 +1,89 @@
 {
- "date": "2026-11-21",
+ "date": "2026-11-22",
  "mode": "rolling",
- "day_index": 6,
+ "day_index": 0,
  "sources": {
   "bazos": {
    "pages": 219,
-   "rows": 7188,
+   "rows": 7197,
    "errors": 0,
    "page_size": 40,
-   "seconds": 459,
+   "seconds": 493,
    "error_rate": 0.0
   },
   "nehnutelnosti": {
-   "pages": 274,
-   "rows": 7047,
+   "pages": 475,
+   "rows": 12787,
    "seen": 0,
    "errors": 0,
    "blocked": null,
    "capped": [],
-   "seconds": 1623,
+   "seconds": 2972,
    "error_rate": 0.0
   },
   "reality": {
-   "pages": 100,
-   "rows": 121,
+   "pages": 168,
+   "rows": 286,
    "errors": 0,
    "capped": [
-    "pozemky: 12498",
-    "domy: 14601",
-    "byty: 15986"
+    "pozemky: 12487",
+    "domy: 14596",
+    "byty: 16007"
    ],
-   "seen": 2215,
-   "new": 78,
-   "via_nehnutelnosti": 2215,
-   "seconds": 444,
+   "seen": 3696,
+   "new": 176,
+   "via_nehnutelnosti": 3696,
+   "seconds": 972,
    "error_rate": 0.0
   },
   "topreality": {
-   "pages": 481,
-   "rows": 7648,
+   "pages": 467,
+   "rows": 7440,
    "seen": 0,
    "errors": 0,
    "blocked": null,
    "capped": [],
-   "seconds": 1209,
+   "stopped": "časový strop — zvyšok obmeny v ďalšom behu",
+   "seconds": 1264,
    "error_rate": 0.0
   },
   "zoznamrealit": {
-   "pages": 67,
-   "rows": 40,
-   "seen": 391,
+   "pages": 0,
+   "rows": 0,
+   "seen": 0,
    "errors": 0,
    "blocked": null,
    "capped": [],
-   "detail": 300,
-   "seconds": 703,
+   "detail": 0,
+   "stopped": "časový strop — zvyšok obmeny v ďalšom behu",
+   "seconds": 0,
    "error_rate": 0.0
   }
  },
- "active_listings": 56082,
- "seen_today": 25069,
- "new_today": 3525,
+ "active_listings": 56952,
+ "seen_today": 31082,
+ "new_today": 2471,
  "by_source_active": {
-  "bazos": 43512,
-  "nehnutelnosti": 49569,
-  "reality": 7125,
-  "topreality": 37384,
+  "bazos": 44947,
+  "nehnutelnosti": 50638,
+  "reality": 7307,
+  "topreality": 39528,
   "zoznamrealit": 1929
  },
- "seconds": 5508,
- "chunks": 9,
+ "seconds": 6579,
+ "chunks": 11,
  "problems": [],
  "info": [
-  "reality: portál ukáže len časť výsledkov — 3 hľadaní orezaných"
+  "reality: portál ukáže len časť výsledkov — 3 hľadaní orezaných",
+  "topreality: zastavené (časový strop — zvyšok obmeny v ďalšom behu) po 467 stranách",
+  "zoznamrealit: zastavené (časový strop — zvyšok obmeny v ďalšom behu) po 0 stranách"
  ],
  "summary": [
-  "bazos: ok · 219 strán · 7188 inzerátov · 0 potvrdených · chybovosť 0.0 % · 7.7 min",
-  "nehnutelnosti: ok · 274 strán · 7047 inzerátov · 0 potvrdených · chybovosť 0.0 % · 27.1 min",
-  "reality: ok · 100 strán · 121 inzerátov · 2215 potvrdených · chybovosť 0.0 % · 7.4 min",
-  "topreality: ok · 481 strán · 7648 inzerátov · 0 potvrdených · chybovosť 0.0 % · 20.1 min",
-  "zoznamrealit: ok · 67 strán · 40 inzerátov · 391 potvrdených · chybovosť 0.0 % · 11.7 min"
+  "bazos: ok · 219 strán · 7197 inzerátov · 0 potvrdených · chybovosť 0.0 % · 8.2 min",
+  "nehnutelnosti: ok · 475 strán · 12787 inzerátov · 0 potvrdených · chybovosť 0.0 % · 49.5 min",
+  "reality: ok · 168 strán · 286 inzerátov · 3696 potvrdených · chybovosť 0.0 % · 16.2 min",
+  "topreality: zastavené časovým stropom · 467 strán · 7440 inzerátov · 0 potvrdených · chybovosť 0.0 % · 21.1 min",
+  "zoznamrealit: zastavené časovým stropom · 0 strán · 0 inzerátov · 0 potvrdených · chybovosť 0.0 % · 0.0 min"
  ],
- "ok": true,
- "ingested": true
+ "ok": true
 }
