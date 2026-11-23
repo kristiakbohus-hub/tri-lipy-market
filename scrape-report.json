@@ -86,5 +86,6 @@
   "topreality: ok · 479 strán · 7616 inzerátov · 0 potvrdených · chybovosť 0.0 % · 20.1 min",
   "zoznamrealit: ok · 67 strán · 157 inzerátov · 246 potvrdených · chybovosť 0.0 % · 11.8 min"
  ],
- "ok": true
+ "ok": true,
+ "ingested": true
 }
