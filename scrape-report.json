@@ -1,86 +1,85 @@
 {
- "date": "2026-11-25",
+ "date": "2026-11-26",
  "mode": "rolling",
- "day_index": 3,
+ "day_index": 4,
  "sources": {
   "bazos": {
-   "pages": 221,
-   "rows": 7299,
+   "pages": 222,
+   "rows": 7240,
    "errors": 0,
    "page_size": 40,
-   "seconds": 423,
+   "seconds": 430,
    "error_rate": 0.0
   },
   "nehnutelnosti": {
-   "pages": 292,
-   "rows": 7608,
+   "pages": 342,
+   "rows": 8926,
    "seen": 0,
    "errors": 0,
    "blocked": null,
    "capped": [],
-   "seconds": 1381,
+   "seconds": 1614,
    "error_rate": 0.0
   },
   "reality": {
-   "pages": 114,
-   "rows": 185,
+   "pages": 130,
+   "rows": 219,
    "errors": 0,
    "capped": [
-    "pozemky: 12489",
-    "domy: 14553",
-    "byty: 16039"
+    "pozemky: 12594",
+    "domy: 14581",
+    "byty: 16074"
    ],
-   "seen": 2466,
-   "new": 79,
-   "via_nehnutelnosti": 2465,
-   "seconds": 495,
+   "seen": 2840,
+   "new": 168,
+   "via_nehnutelnosti": 2840,
+   "seconds": 597,
    "error_rate": 0.0
   },
   "topreality": {
-   "pages": 478,
-   "rows": 7600,
+   "pages": 479,
+   "rows": 7615,
    "seen": 0,
    "errors": 0,
    "blocked": null,
    "capped": [],
-   "seconds": 1089,
+   "seconds": 1112,
    "error_rate": 0.0
   },
   "zoznamrealit": {
-   "pages": 70,
-   "rows": 101,
-   "seen": 330,
+   "pages": 73,
+   "rows": 46,
+   "seen": 414,
    "errors": 0,
    "blocked": null,
    "capped": [],
    "detail": 300,
-   "seconds": 653,
+   "seconds": 674,
    "error_rate": 0.0
   }
  },
- "active_listings": 59281,
- "seen_today": 25944,
- "new_today": 2269,
+ "active_listings": 59964,
+ "seen_today": 27520,
+ "new_today": 2376,
  "by_source_active": {
-  "bazos": 49278,
-  "nehnutelnosti": 52929,
-  "reality": 7720,
-  "topreality": 45512,
-  "zoznamrealit": 2367
+  "bazos": 50830,
+  "nehnutelnosti": 53427,
+  "reality": 7890,
+  "topreality": 47152,
+  "zoznamrealit": 2413
  },
- "seconds": 4823,
- "chunks": 9,
+ "seconds": 5316,
+ "chunks": 10,
  "problems": [],
  "info": [
   "reality: portál ukáže len časť výsledkov — 3 hľadaní orezaných"
  ],
  "summary": [
-  "bazos: ok · 221 strán · 7299 inzerátov · 0 potvrdených · chybovosť 0.0 % · 7.0 min",
-  "nehnutelnosti: ok · 292 strán · 7608 inzerátov · 0 potvrdených · chybovosť 0.0 % · 23.0 min",
-  "reality: ok · 114 strán · 185 inzerátov · 2466 potvrdených · chybovosť 0.0 % · 8.2 min",
-  "topreality: ok · 478 strán · 7600 inzerátov · 0 potvrdených · chybovosť 0.0 % · 18.1 min",
-  "zoznamrealit: ok · 70 strán · 101 inzerátov · 330 potvrdených · chybovosť 0.0 % · 10.9 min"
+  "bazos: ok · 222 strán · 7240 inzerátov · 0 potvrdených · chybovosť 0.0 % · 7.2 min",
+  "nehnutelnosti: ok · 342 strán · 8926 inzerátov · 0 potvrdených · chybovosť 0.0 % · 26.9 min",
+  "reality: ok · 130 strán · 219 inzerátov · 2840 potvrdených · chybovosť 0.0 % · 9.9 min",
+  "topreality: ok · 479 strán · 7615 inzerátov · 0 potvrdených · chybovosť 0.0 % · 18.5 min",
+  "zoznamrealit: ok · 73 strán · 46 inzerátov · 414 potvrdených · chybovosť 0.0 % · 11.2 min"
  ],
- "ok": true,
- "ingested": true
+ "ok": true
 }
