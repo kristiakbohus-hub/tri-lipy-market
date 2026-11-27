@@ -4,3 +4,6 @@ listings.db-journal
 tg_alerted.json
 __pycache__/
 *.pyc
+
+# príležitosti z Macu (k.ú. + nevysporiadané parcely) NESMÚ ísť do verejného repa — 2026-11-27, CISTENIE_REPA
+opportunities.json
