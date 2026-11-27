@@ -8,8 +8,9 @@ blokovať (HTTP 403/429, overenie „nie som robot", prázdna stránka), zber ho
 reportu behu. Ochrana sa NEobchádza (rozhodnutie vlastníka 2026-11-11: pridať všetky portály, ale
 bez obchádzania).
 
-TÝŽDENNÁ OBMENA: každý deň sa prejde 1/7 katalógu (podľa okresu alebo stránky) + prioritné okresy
-(Kysuce, Žilina, Ružomberok) celé, takže každý aktívny inzerát sa uvidí aspoň raz za týždeň.
+TÝŽDENNÁ OBMENA: každý deň sa prejde 1/7 katalógu SR (podľa okresu alebo stránky) + CELÝ Žilinský kraj
+(11 okresov, od 2026-11-27 na každom portáli: nehnutelnosti po okresoch, topreality filter kraja,
+zoznamrealit po okresoch), takže každý aktívny inzerát v SR sa uvidí aspoň raz za týždeň a v kraji denne.
 
 Každý crawl vracia (rows, seen_ids, stat):
   rows     — inzeráty s cenou na zápis (rovnaký tvar ako bazos: source, ext_id, url, title, ptype,
@@ -48,8 +49,13 @@ OKRESY = {
                 "Rožňava", "Sobrance", "Spišská Nová Ves", "Trebišov"],
 }
 OKRES_LIST = [(o, k) for k, os_ in OKRESY.items() for o in os_]
-# denne celé (oblasť appky); ostatné okresy raz za týždeň
-PRIORITY_OKRESY = {"Čadca", "Kysucké Nové Mesto", "Žilina", "Bytča", "Ružomberok"}
+# Oblasť appky = CELÝ Žilinský kraj (11 okresov) denne celý na každom portáli; ostatné okresy SR raz za týždeň.
+# 2026-11-27: dovtedy denne len Čadca, KNM, Žilina, Bytča, Ružomberok a len na nehnutelnosti.sk —
+# topreality, zoznamrealit a Bazoš išli len celoštátne (najnovšie strany + 1/7), takže zvyšok kraja
+# (Martin, Liptov, Orava, Turiec) sa videl raz za týždeň a pokles ceny prišiel až o niekoľko dní.
+KRAJ = "Žilinský"
+KRAJ_OKRESY = OKRESY[KRAJ]
+PRIORITY_OKRESY = set(KRAJ_OKRESY)
 
 
 def _ascii(s):
@@ -68,10 +74,12 @@ def norm_okres(s):
 
 
 def todays_okresy(day_index):
-    """Okresy na dnes: prioritné + každý 7. podľa poradia (týždenná obmena)."""
+    """Okresy na dnes: prioritné (kraj appky) NAJPRV — keby zber narazil na časový strop, kraj je hotový —
+    potom každý 7. z ostatných podľa poradia (týždenná obmena)."""
     if SMOKE:
         return [("Čadca", "Žilinský")]
-    return [(o, k) for i, (o, k) in enumerate(OKRES_LIST) if o in PRIORITY_OKRESY or i % 7 == day_index]
+    pri = [(o, k) for o, k in OKRES_LIST if o in PRIORITY_OKRESY]
+    return pri + [(o, k) for i, (o, k) in enumerate(OKRES_LIST) if o not in PRIORITY_OKRESY and i % 7 == day_index]
 
 
 # Skúšobný beh (PORTALS_SMOKE=1): jeden okres, 2 strany, 5 detailov — na overenie parsovania pred nasadením.
@@ -235,12 +243,16 @@ def _tr_cards(html):
     """Karta: atribúty data-ga4-container-* + span.location-city / span.location-district „(okres)" +
     span.value „N m<sup>2</sup>" (pozemok = area-plot, inak úžitková). Mena „EUR/m2" = cena je za m²."""
     out = []
-    for m in re.finditer(r'<div class="col-lg-12[^"]*item-col[^"]*"([^>]*)>', html):
+    starts = list(re.finditer(r'<div class="col-lg-12[^"]*item-col[^"]*"([^>]*)>', html))
+    for k, m in enumerate(starts):
         attrs = dict(re.findall(r'data-ga4-container-([a-z_0-9]+)="([^"]*)"', m.group(1)))
         eid = attrs.get("item_id_generic")
         if not eid:
             continue
-        body = html[m.end():m.end() + 9000]
+        # LEN po začiatok ďalšej karty (2026-11-27): pevné okno 9000 znakov pretekalo do susednej karty —
+        # karta bez „(okres)" (mesto = okresné mesto) dostala okres aj výmeru cudzieho inzerátu (Bytča → „Čadca")
+        end = starts[k + 1].start() if k + 1 < len(starts) else m.end() + 9000
+        body = html[m.end():min(end, m.end() + 9000)]
         href = re.search(r'href="(https://www\.topreality\.sk/[^"]*-r' + eid + r'\.html)"', body)
         city = re.search(r'class="location-city">([^<]+)<', body)
         dist = re.search(r'class="location-district">\(([^)<]+)\)<', body)
@@ -255,10 +267,68 @@ def _tr_cards(html):
     return out
 
 
+TR_KRAJ_ID = "c500-Žilinský kraj"     # id kraja z našepkávača portálu (/user/new_estate/searchAjax.php), overené 2026-11-27
+TR_KRAJ_MAX_PAGES = 400               # poistka; kraj má ~1 800 pozemkov = ~115 strán
+
+
+def _tr_found(html):
+    """„<strong>1 791</strong> inzerátov" → 1791 (None ak chýba)."""
+    m = re.search(r'found-items">\s*<strong>([\d\s\xa0]+)</strong>', html or "")
+    return _num(m.group(1)) if m else None
+
+
 def crawl_topreality(day_index, refine_ptype, okres_kraj, sleep=1.3):
+    """1) CELÝ Žilinský kraj denne (hľadanie s filtrom kraja, všetky strany), 2) celé SR: najnovšie strany
+    + každá 7. hlbšia (týždenná obmena). Inzerát z kraja sa v celoštátnej časti už druhýkrát nezapíše."""
     rows, seen, st = [], [], _stat()
+    st["kraj_pages"] = 0
+    st["kraj_rows"] = 0
+    got = set()
+
+    def add(c, ptype, deal, in_kraj):
+        if not c["url"] or c["id"] in got:
+            return
+        got.add(c["id"])
+        okres = norm_okres(c["okres"])
+        if not okres and c["obec"] in okres_kraj:  # karta bez „(okres)" = obec je samotné okresné mesto
+            okres = c["obec"]
+        pt = refine_ptype(ptype, c["name"])
+        area = (c["plot"] or c["usable"]) if ptype == "pozemok" else (c["usable"] or c["plot"])
+        area = float(area) if area else None
+        if c["unit"]:                      # cena za m² → celková = €/m² × výmera
+            price, ppm2 = (round(c["price"] * area) if c["price"] and area else None), (float(c["price"]) if c["price"] else None)
+        else:
+            price, ppm2 = c["price"], _ppm2(c["price"], area)
+        rows.append(dict(source="topreality", ext_id=c["id"], url=c["url"], title=c["name"][:160], ptype=pt,
+                         deal=deal, obec=c["obec"], psc=None, area_m2=area, price_eur=price,
+                         ppm2=ppm2, listed=None, okres=okres, kraj=okres_kraj.get(okres) or (KRAJ if in_kraj else None)))
+        st["rows"] += 1
+        if in_kraj:
+            st["kraj_rows"] += 1
+
     try:
-        for tid, ptype, deal in TR_CATS:
+        from urllib.parse import quote
+        kraj_q = "&obec=" + quote(TR_KRAJ_ID) + "&n_search=search&searchType=string"
+        for tid, ptype, deal in TR_CATS:              # 1) kraj appky — všetky strany
+            pg, last = 1, TR_KRAJ_MAX_PAGES
+            while pg <= (min(last, 2) if SMOKE else last):
+                code, h = fetch(f"https://www.topreality.sk/vyhladavanie-nehnutelnosti-{pg}.html?type={tid}{kraj_q}")
+                time.sleep(sleep)
+                st["pages"] += 1
+                st["kraj_pages"] += 1
+                cards = _tr_cards(h) if code == 200 else []
+                if not cards:
+                    if code != 200:
+                        st["errors"] += 1
+                    break
+                if pg == 1:
+                    found = _tr_found(h)
+                    if found:
+                        last = min(TR_KRAJ_MAX_PAGES, math.ceil(found / len(cards)) + 1)   # +1 = poistka (prázdna → koniec)
+                for c in cards:
+                    add(c, ptype, deal, True)
+                pg += 1
+        for tid, ptype, deal in TR_CATS:              # 2) celé SR — týždenná obmena
             pg = 1
             while not (SMOKE and pg > 2):
                 if pg > TR_DAILY_PAGES and pg % 7 != day_index:
@@ -276,20 +346,7 @@ def crawl_topreality(day_index, refine_ptype, okres_kraj, sleep=1.3):
                         st["errors"] += 1
                     break
                 for c in cards:
-                    if not c["url"]:
-                        continue
-                    okres = norm_okres(c["okres"])
-                    pt = refine_ptype(ptype, c["name"])
-                    area = (c["plot"] or c["usable"]) if ptype == "pozemok" else (c["usable"] or c["plot"])
-                    area = float(area) if area else None
-                    if c["unit"]:                      # cena za m² → celková = €/m² × výmera
-                        price, ppm2 = (round(c["price"] * area) if c["price"] and area else None), (float(c["price"]) if c["price"] else None)
-                    else:
-                        price, ppm2 = c["price"], _ppm2(c["price"], area)
-                    rows.append(dict(source="topreality", ext_id=c["id"], url=c["url"], title=c["name"][:160], ptype=pt,
-                                     deal=deal, obec=c["obec"], psc=None, area_m2=area, price_eur=price,
-                                     ppm2=ppm2, listed=None, okres=okres, kraj=okres_kraj.get(okres)))
-                    st["rows"] += 1
+                    add(c, ptype, deal, False)
                 pg += 1
     except Blocked as e:
         st["stopped" if isinstance(e, OutOfTime) else "blocked"] = str(e)
@@ -345,32 +402,60 @@ def _zr_detail(html):
     return price, name, desc, crumbs
 
 
+ZR_KRAJ_MAX_PAGES = 60      # na okres a kategóriu (Žilina pozemky ≈ 100 ponúk = 4 strany)
+
+
 def crawl_zoznamrealit(day_index, refine_ptype, seen_known, okres_kraj, sleep=1.2):
+    """1) CELÝ Žilinský kraj denne: zoznam po okresoch (/predaj/<kat>/<okres>/<strana>) — nové inzeráty kraja
+    idú do detailov PRVÉ; 2) celé SR: najnovšie strany + každá 7. hlbšia. Detail (cena) len pre nové, strop ZR_DETAIL_CAP."""
     rows, seen, st = [], [], _stat()
     st["detail"] = 0
+    st["kraj_pages"] = 0
     new = []
-    try:
-        for cat, ptype in ZR_CATS:
-            pg = 1
-            while pg <= (1 if SMOKE else 400):
-                if pg > ZR_DAILY_PAGES and pg % 7 != day_index:
-                    pg += 1
-                    continue
-                url = f"https://www.zoznamrealit.sk/predaj/{cat}" + (f"/{pg}" if pg > 1 else "")
-                code, h = fetch(url)
-                time.sleep(sleep)
-                st["pages"] += 1
-                items = _zr_list(h) if code == 200 else []
-                if not items:
-                    if code != 200:
-                        st["errors"] += 1
-                    break
-                for u, eid, nm in items:
-                    if eid in seen_known:
-                        seen.append(eid); st["seen"] += 1
-                    else:
-                        new.append((u, eid, nm, ptype))
+    listed = set()
+
+    def take(items, ptype):
+        """→ počet inzerátov, ktoré dnes ešte neboli na zozname (0 = strana sa opakuje → koniec)."""
+        fresh = 0
+        for u, eid, nm in items:
+            if eid in listed:
+                continue
+            listed.add(eid); fresh += 1
+            if eid in seen_known:
+                seen.append(eid); st["seen"] += 1
+            else:
+                new.append((u, eid, nm, ptype))
+        return fresh
+
+    def walk(base, max_pages, rolling, kraj):
+        pg = 1
+        while pg <= (1 if SMOKE else max_pages):
+            if rolling and pg > ZR_DAILY_PAGES and pg % 7 != day_index:
                 pg += 1
+                continue
+            code, h = fetch(base + (f"/{pg}" if pg > 1 else ""))
+            time.sleep(sleep)
+            st["pages"] += 1
+            if kraj:
+                st["kraj_pages"] += 1
+            items = _zr_list(h) if code == 200 else []
+            if not items:
+                if code != 200 and code != 404:
+                    st["errors"] += 1
+                break
+            yield items
+            pg += 1
+
+    try:
+        for okres in (KRAJ_OKRESY[:1] if SMOKE else KRAJ_OKRESY):         # 1) kraj appky — všetky strany
+            for cat, ptype in ZR_CATS:
+                for items in walk(f"https://www.zoznamrealit.sk/predaj/{cat}/{slug(okres)}", ZR_KRAJ_MAX_PAGES, False, True):
+                    if not take(items, ptype):
+                        break                     # portál za poslednou stranou vracia znova tie isté inzeráty
+        st["kraj_new"] = len(new)
+        for cat, ptype in ZR_CATS:                                          # 2) celé SR — týždenná obmena
+            for items in walk(f"https://www.zoznamrealit.sk/predaj/{cat}", 400, True, False):
+                take(items, ptype)
         for u, eid, nm, ptype in new[:(5 if SMOKE else ZR_DETAIL_CAP)]:
             code, h = fetch(u)
             time.sleep(0.9)

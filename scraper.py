@@ -208,9 +208,25 @@ def bazos_counter(html):
     return ((b - a + 1) if a and b and b >= a else None), n
 
 
+# Žilinský kraj (oblasť appky) DENNE CELÝ (2026-11-27). Bazoš nemá filter okresu ani kraja, len „PSČ + okolie
+# v km" → kruhy okolo okresných miest pokryjú všetkých 11 okresov; prekryv kruhov (a celoštátnej časti) sa
+# zlúči podľa ID inzerátu. Okres inzerátu sa určuje ako doteraz (geokód obce), kruh ho neurčuje.
+BAZOS_KRAJ = [
+    ("01001", 25, "Žilina + Bytča + Kysucké Nové Mesto + Rajecká dolina"),
+    ("02201", 25, "Čadca (až po Makov a Skalité)"),
+    ("03601", 20, "Martin"),
+    ("03901", 15, "Turčianske Teplice"),
+    ("03401", 20, "Ružomberok"),
+    ("03101", 30, "Liptovský Mikuláš (až po Važec)"),
+    ("02601", 15, "Dolný Kubín"),
+    ("02901", 25, "Námestovo (až po Oravskú Lesnú)"),
+    ("02744", 20, "Tvrdošín (Trstená, Zuberec, Suchá Hora)"),
+]
+
+
 def crawl_bazos(mode, day_index=0, stat=None):
-    """delta = najnovších 8 strán; full = všetko; rolling = najnovších 8 + každá 7. hlbšia strana podľa dňa
-    (za týždeň celý katalóg).
+    """delta = najnovších 8 strán; full = všetko; rolling = Žilinský kraj celý (kruhy BAZOS_KRAJ, všetky strany)
+    + celé SR: najnovších 8 + každá 7. hlbšia strana podľa dňa (za týždeň celý katalóg).
 
     2026-11-11: Bazoš ukazuje 40 inzerátov na stranu, kód krokoval po 20 → každý deň sa sťahovali prekryté
     okná (2/7 katalógu, každý inzerát 2× týždenne = dvojnásobok požiadaviek). Veľkosť strany aj celkový
@@ -219,64 +235,87 @@ def crawl_bazos(mode, day_index=0, stat=None):
     st = stat if stat is not None else {}
     st.setdefault("pages", 0); st.setdefault("errors", 0)
     newest = 8
-    all_l = []
-    size = None                       # veľkosť strany (z počítadla; kým nie je známa, 20 = bezpečné prekrytie)
-    src_err_run = 0
-    try:
-        for seg, ptype, deal in BAZOS:
-            before = len(all_l)
-            p = 0
-            err_run = 0
-            last = None               # index poslednej strany podľa celkového počtu
-            while p < 1000:
-                if out_of_time():
-                    st["stopped"] = "časový strop — zvyšok obmeny v ďalšom behu"
-                    break
-                if mode == "delta" and p >= newest:
-                    break
-                if last is not None and p > last:
-                    break             # za koncom katalógu (podľa počítadla) — nič nesťahuj
-                if mode == "rolling" and p >= newest and p % 7 != day_index:
-                    p += 1
-                    continue
-                step = size or 20
-                url = f"{BASE}{seg}/{p * step}/" if p else f"{BASE}{seg}/"
-                code, html, _ = get(url)
-                st["pages"] += 1
-                if code in END_STATUS:
-                    break             # za poslednou stranou Bazoš vracia 404 = koniec katalógu, nie chyba
-                if code != 200 or not html:
-                    st["errors"] += 1
-                    err_run += 1; src_err_run += 1
-                    if src_err_run >= SOURCE_FAIL_RUN:   # doterajšie inzeráty sa ponechajú
-                        st["error"] = f"{src_err_run} chýb po sebe — portál nedostupný, zber ukončený"
-                        st.setdefault("failed", []).append(seg)
-                        break
-                    if err_run >= CAT_FAIL_RUN:
-                        print(f"  bazos {seg}: {err_run} chýb po sebe na strane {p} — kategóriu ukončujem", file=sys.stderr)
-                        st.setdefault("failed", []).append(seg)
-                        break
-                    time.sleep(10); p += 1; continue
-                err_run = src_err_run = 0
-                psize, total = bazos_counter(html)
-                if p == 0 and psize:
-                    size = psize
-                if total is not None and size:
-                    last = max(0, math.ceil(total / size) - 1)
-                if html.count(BAZOS_BLOCK) == 0 and p > 0:
-                    break             # prázdna stránka = koniec katalógu
-                all_l += parse_bazos(html, ptype, deal)
-                time.sleep(1.3)
+    rows = {}                         # ext_id → riadok (ten istý inzerát z viacerých kruhov / strán len raz)
+    state = {"size": None, "src_err_run": 0}   # veľkosť strany (z počítadla; kým nie je známa, 20 = bezpečné prekrytie)
+    smoke = portals.SMOKE
+
+    def walk(seg, ptype, deal, qs="", kraj=False):
+        """Prejde strany jedného hľadania. kraj=True → všetky strany (bez obmeny)."""
+        p = 0
+        err_run = 0
+        last = None                   # index poslednej strany podľa celkového počtu
+        while p < 1000:
+            if out_of_time():
+                st["stopped"] = "časový strop — zvyšok obmeny v ďalšom behu"
+                break
+            if smoke and p >= 1:
+                break
+            if not kraj and mode == "delta" and p >= newest:
+                break
+            if last is not None and p > last:
+                break                 # za koncom katalógu (podľa počítadla) — nič nesťahuj
+            if not kraj and mode == "rolling" and p >= newest and p % 7 != day_index:
                 p += 1
-            print(f"  bazos {seg}: {len(all_l) - before} inzerátov (strana {size or '?'} inz.)")
+                continue
+            step = state["size"] or 20
+            url = (f"{BASE}{seg}/{p * step}/" if p else f"{BASE}{seg}/") + qs
+            code, html, _ = get(url)
+            st["pages"] += 1
+            if kraj:
+                st["kraj_pages"] = st.get("kraj_pages", 0) + 1
+            if code in END_STATUS:
+                break                 # za poslednou stranou Bazoš vracia 404 = koniec katalógu, nie chyba
+            if code != 200 or not html:
+                st["errors"] += 1
+                err_run += 1; state["src_err_run"] += 1
+                if state["src_err_run"] >= SOURCE_FAIL_RUN:   # doterajšie inzeráty sa ponechajú
+                    st["error"] = f"{state['src_err_run']} chýb po sebe — portál nedostupný, zber ukončený"
+                    st.setdefault("failed", []).append(seg)
+                    break
+                if err_run >= CAT_FAIL_RUN:
+                    print(f"  bazos {seg}{qs[:40]}: {err_run} chýb po sebe na strane {p} — hľadanie ukončujem", file=sys.stderr)
+                    st.setdefault("failed", []).append(seg + (" (kraj)" if kraj else ""))
+                    break
+                time.sleep(10); p += 1; continue
+            err_run = state["src_err_run"] = 0
+            psize, total = bazos_counter(html)
+            if p == 0 and psize:
+                state["size"] = psize
+            if p == 0 and kraj and total is not None:
+                st["kraj_found"] = st.get("kraj_found", 0) + total
+            if total is not None and state["size"]:
+                last = max(0, math.ceil(total / state["size"]) - 1)
+            if html.count(BAZOS_BLOCK) == 0 and p > 0:
+                break                 # prázdna stránka = koniec katalógu
+            for r in parse_bazos(html, ptype, deal):
+                rows.setdefault(r["ext_id"], r)
+            time.sleep(1.3)
+            p += 1
+
+    try:
+        if mode == "rolling":         # 1) kraj appky — každý deň všetky strany (pred celoštátnou časťou: časový strop)
+            for psc, km, _ in (BAZOS_KRAJ[:2] if smoke else BAZOS_KRAJ):
+                qs = f"?hledat=&hlokalita={psc}&humkreis={km}&cenaod=&cenado=&order="
+                for seg, ptype, deal in BAZOS:
+                    walk(seg, ptype, deal, qs, kraj=True)
+                    if st.get("stopped") or st.get("error"):
+                        break
+                if st.get("stopped") or st.get("error"):
+                    break
+            st["kraj_rows"] = len(rows)
+            print(f"  bazos Žilinský kraj: {len(rows)} inzerátov s cenou ({st.get('kraj_pages', 0)} strán)")
+        for seg, ptype, deal in BAZOS:   # 2) celé SR
             if st.get("stopped") or st.get("error"):
                 break
+            before = len(rows)
+            walk(seg, ptype, deal)
+            print(f"  bazos {seg}: +{len(rows) - before} inzerátov (strana {state['size'] or '?'} inz.)")
     except Blocked as e:
         st["stopped" if isinstance(e, OutOfTime) else "blocked"] = str(e)
-    st["rows"] = len(all_l)
-    if size:
-        st["page_size"] = size
-    return all_l
+    st["rows"] = len(rows)
+    if state["size"]:
+        st["page_size"] = state["size"]
+    return list(rows.values())
 
 # ——— reality.sk (zoznam = JSON-LD ItemList s cenou, výmerou aj obcou; detail netreba) ———
 # 2026-11-11 — prečo z 138 strán len 88 nových: (1) detail = 1 request/inzerát a strop 200/deň, takže
