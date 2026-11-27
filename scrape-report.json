@@ -8,75 +8,75 @@
    "rows": 3100,
    "errors": 0,
    "kraj_pages": 151,
-   "kraj_found": 6039,
+   "kraj_found": 6041,
    "blocked": "HTTP 429 — portál opakovane žiada spomaliť",
    "page_size": 40,
-   "seconds": 422,
+   "seconds": 379,
    "error_rate": 0.0
   },
   "nehnutelnosti": {
-   "pages": 427,
-   "rows": 11153,
+   "pages": 430,
+   "rows": 11207,
    "seen": 0,
    "errors": 0,
    "blocked": null,
    "capped": [],
-   "seconds": 2432,
+   "seconds": 2232,
    "error_rate": 0.0
   },
   "reality": {
-   "pages": 189,
-   "rows": 434,
+   "pages": 137,
+   "rows": 285,
    "errors": 0,
    "capped": [
-    "pozemky: 12532",
-    "domy: 14526",
-    "byty: 16048"
+    "pozemky: 12574",
+    "domy: 14571",
+    "byty: 16119"
    ],
-   "seen": 4073,
-   "new": 259,
-   "via_nehnutelnosti": 4072,
-   "seconds": 1164,
+   "seen": 2961,
+   "new": 190,
+   "via_nehnutelnosti": 2961,
+   "seconds": 700,
    "error_rate": 0.0
   },
   "topreality": {
-   "pages": 818,
-   "rows": 12194,
+   "pages": 824,
+   "rows": 12290,
    "seen": 0,
    "errors": 0,
    "blocked": null,
    "capped": [],
-   "kraj_pages": 338,
-   "kraj_rows": 5348,
-   "seconds": 2161,
+   "kraj_pages": 341,
+   "kraj_rows": 5393,
+   "seconds": 1867,
    "error_rate": 0.0
   },
   "zoznamrealit": {
    "pages": 140,
-   "rows": 100,
-   "seen": 619,
+   "rows": 33,
+   "seen": 719,
    "errors": 0,
    "blocked": null,
    "capped": [],
    "detail": 300,
    "kraj_pages": 73,
-   "kraj_new": 439,
-   "seconds": 909,
+   "kraj_new": 340,
+   "seconds": 782,
    "error_rate": 0.0
   }
  },
- "active_listings": 60904,
- "seen_today": 46757,
- "new_today": 4776,
+ "active_listings": 61067,
+ "seen_today": 54025,
+ "new_today": 5980,
  "by_source_active": {
-  "bazos": 52549,
-  "nehnutelnosti": 54193,
-  "reality": 8276,
-  "topreality": 50741,
-  "zoznamrealit": 2709
+  "bazos": 52446,
+  "nehnutelnosti": 54263,
+  "reality": 8466,
+  "topreality": 51656,
+  "zoznamrealit": 2742
  },
- "seconds": 7878,
- "chunks": 16,
+ "seconds": 6586,
+ "chunks": 19,
  "problems": [
   "bazos: portál zablokoval prístup (HTTP 429 — portál opakovane žiada spomaliť)"
  ],
@@ -84,11 +84,11 @@
   "reality: portál ukáže len časť výsledkov — 3 hľadaní orezaných"
  ],
  "summary": [
-  "bazos: BLOKOVANÉ · 151 strán · 3100 inzerátov · 0 potvrdených · chybovosť 0.0 % · 7.0 min",
-  "nehnutelnosti: ok · 427 strán · 11153 inzerátov · 0 potvrdených · chybovosť 0.0 % · 40.5 min",
-  "reality: ok · 189 strán · 434 inzerátov · 4073 potvrdených · chybovosť 0.0 % · 19.4 min",
-  "topreality: ok · 818 strán · 12194 inzerátov · 0 potvrdených · chybovosť 0.0 % · 36.0 min",
-  "zoznamrealit: ok · 140 strán · 100 inzerátov · 619 potvrdených · chybovosť 0.0 % · 15.2 min"
+  "bazos: BLOKOVANÉ · 151 strán · 3100 inzerátov · 0 potvrdených · chybovosť 0.0 % · 6.3 min",
+  "nehnutelnosti: ok · 430 strán · 11207 inzerátov · 0 potvrdených · chybovosť 0.0 % · 37.2 min",
+  "reality: ok · 137 strán · 285 inzerátov · 2961 potvrdených · chybovosť 0.0 % · 11.7 min",
+  "topreality: ok · 824 strán · 12290 inzerátov · 0 potvrdených · chybovosť 0.0 % · 31.1 min",
+  "zoznamrealit: ok · 140 strán · 33 inzerátov · 719 potvrdených · chybovosť 0.0 % · 13.0 min"
  ],
  "ok": false
 }
