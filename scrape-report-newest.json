@@ -4,13 +4,13 @@
  "day_index": 6,
  "sources": {
   "bazos": {
-   "pages": 33,
-   "rows": 1105,
+   "pages": 14,
+   "rows": 474,
    "errors": 0,
-   "newest_pages": 33,
-   "new": 241,
+   "newest_pages": 14,
+   "new": 3,
    "page_size": 40,
-   "seconds": 208,
+   "seconds": 90,
    "error_rate": 0.0
   },
   "nehnutelnosti": {
@@ -24,42 +24,39 @@
    "error_rate": 0.0
   },
   "topreality": {
-   "pages": 4,
-   "rows": 1,
-   "seen": 63,
+   "pages": 3,
+   "rows": 0,
+   "seen": 48,
    "errors": 0,
    "blocked": null,
    "capped": [],
-   "new": 1,
-   "seconds": 14,
+   "new": 0,
+   "seconds": 10,
    "error_rate": 0.0
   }
  },
- "started_at": "2026-11-28T11:22:51+00:00",
+ "started_at": "2026-11-28T11:28:54+00:00",
  "active_listings": 61506,
- "seen_today": 42496,
- "new_today": 1884,
+ "seen_today": 42499,
+ "new_today": 1887,
  "by_source_active": {
-  "bazos": 53472,
+  "bazos": 53475,
   "nehnutelnosti": 54544,
   "reality": 8901,
   "topreality": 53691,
   "zoznamrealit": 2779
  },
- "written": 1106,
- "new_rows": 127,
- "seconds": 240,
- "finished_at": "2026-11-28T11:26:52+00:00",
+ "written": 474,
+ "new_rows": 65,
+ "seconds": 118,
+ "finished_at": "2026-11-28T11:30:52+00:00",
  "chunks": 1,
  "problems": [],
  "info": [],
  "summary": [
-  "bazos: ok · 33 strán · 1105 inzerátov · 0 potvrdených · chybovosť 0.0 % · 3.5 min",
+  "bazos: ok · 14 strán · 474 inzerátov · 0 potvrdených · chybovosť 0.0 % · 1.5 min",
   "nehnutelnosti: ok · 4 strán · 0 inzerátov · 71 potvrdených · chybovosť 0.0 % · 0.3 min",
-  "topreality: ok · 4 strán · 1 inzerátov · 63 potvrdených · chybovosť 0.0 % · 0.2 min"
+  "topreality: ok · 3 strán · 0 inzerátov · 48 potvrdených · chybovosť 0.0 % · 0.2 min"
  ],
- "ok": true,
- "ingested": true,
- "ingested_at": "2026-11-28T11:27:28+00:00",
- "trigger": "push"
+ "ok": true
 }
