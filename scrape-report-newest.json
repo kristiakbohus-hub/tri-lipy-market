@@ -58,5 +58,8 @@
   "nehnutelnosti: ok · 4 strán · 0 inzerátov · 71 potvrdených · chybovosť 0.0 % · 0.3 min",
   "topreality: ok · 3 strán · 0 inzerátov · 48 potvrdených · chybovosť 0.0 % · 0.2 min"
  ],
- "ok": true
+ "ok": true,
+ "ingested": true,
+ "ingested_at": "2026-11-28T11:31:24+00:00",
+ "trigger": "push"
 }
