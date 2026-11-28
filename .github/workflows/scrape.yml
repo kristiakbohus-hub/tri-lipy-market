@@ -1,25 +1,40 @@
 name: Denný scrape trhových cien
 
-# Mac-nezávislý scrape: beží na GitHub runneri, commitne JSON do tohto repa,
-# a curlne /api/ingest-market na appke → D1. Stav (listings.db) drží actions/cache,
-# cold-start seed = state/listings.db.gz (jednorazovo commitnutý, história first_price/drops/geokód).
+# Mac-nezávislý zber inzercie 2× denne: beží na GitHub runneri, commitne JSON do tohto repa a pošle ho po krokoch
+# do appky (/api/ingest-market → D1). Stav (listings.db) drží actions/cache, cold-start seed = state/listings.db.gz.
+#
+#   RANNÝ beh (rolling)        — celé portály: kraj denne + obmena katalógu SR + re-verify Bazoša (~2–2,5 h),
+#                                hotový pred ranným súhrnom o 7:30 (súhrn posiela appka/Mac, nie tento workflow)
+#   POPOLUDŇAJŠÍ beh (newest)  — oprava 10 (2026-11-28): LEN NOVÉ inzeráty (Bazoš najnovšie strany, kraj na
+#                                reality.sk = nehnutelnosti.sk a topreality od najnovších), ~5–15 min, nič neposiela
+#
+# Ktorý beh sa spustí, rozhoduje krok „Už dnes prebehlo?" (health.py plan) podľa AKTUÁLNYCH reportov v repe:
+# kým dnes nie je ranný zber v appke, každý termín spustí ranný; potom 12–21 h (miestny čas) a aspoň 3 h po
+# poslednom zbere jeden popoludňajší. GitHub plánované behy mešká o hodiny a niektoré vynechá — preto viac termínov.
 
 on:
-  # TRI termíny: GitHub plánované behy mešká o hodiny a pri záťaži ich občas vynechá. Prvý úspešný
-  # zber dňa sa ráta, ďalšie termíny sa za pár sekúnd preskočia (krok „Už dnes prebehlo?").
   schedule:
-    - cron: "30 2 * * *"     # 02:30 UTC — skôr ako do 2026-11-27 (05:00): zber s celým Žilinským krajom trvá ~2,5 h
-                             #   a má byť v appke pred ranným súhrnom o 7:30
-    - cron: "30 10 * * *"    # 10:30 UTC — záloha
-    - cron: "0 16 * * *"     # 16:00 UTC — záloha
-  workflow_dispatch: {}       # manuálne spustenie
-  push:                       # zmena kódu scrapera = okamžitý overovací beh (dátové commity bota ho nespúšťajú)
+    - cron: "30 2 * * *"     # 02:30 UTC — ranný zber (zber s celým Žilinským krajom trvá ~2,5 h)
+    - cron: "30 10 * * *"    # 10:30 UTC — záloha ranného
+    - cron: "0 13 * * *"     # 13:00 UTC = 14:00 SEČ / 15:00 SELČ — popoludňajší ľahký beh (len nové inzeráty)
+    - cron: "0 16 * * *"     # 16:00 UTC — záloha (ranný, ak ešte nebol; inak popoludňajší, ak ešte nebol)
+  workflow_dispatch:          # ručné spustenie: Actions → Denný scrape → Run workflow
+    inputs:
+      mode:
+        description: "auto = podľa stavu dňa · rolling = ranný (celý) · newest = popoludňajší (len nové)"
+        type: choice
+        options: [auto, rolling, newest]
+        default: auto
+  push:                       # zmena kódu zberu = okamžitý overovací beh (dátové commity bota ho nespúšťajú)
     branches: [main]
-    paths: ["scraper.py", "portals.py", "price_trends.py", "health.py", ".github/workflows/scrape.yml"]
+    paths: ["scraper.py", "portals.py", "price_trends.py", "health.py", "ingest.py", "repo_push.py", "polite.py",
+            "pii.py", ".github/workflows/scrape.yml"]
 
 permissions:
   contents: write
 
+# Ranný aj popoludňajší beh sú v TOM ISTOM workflowe a skupine → nikdy nebežia naraz (ďalší čaká vo fronte;
+# keď medzitým príde ďalší termín, čakajúci sa zruší — nevadí, každý beh si o režime rozhodne až pri štarte).
 concurrency:
   group: scrape
   cancel-in-progress: false
@@ -27,32 +42,31 @@ concurrency:
 jobs:
   scrape:
     runs-on: ubuntu-latest
-    # rolling = celý Žilinský kraj denne na všetkých portáloch + 1/7 katalógu SR (Bazoš, reality, nehnutelnosti,
-    # topreality, zoznamrealit) ≈ 2–2,5 h. Repo je VEREJNÉ → GitHub-hosted runner je zadarmo bez limitu minút
-    # (overené 2026-11-27); max. dĺžka jobu na GitHub runneri je 6 h.
+    # Repo je VEREJNÉ → štandardný GitHub-hosted runner je zadarmo bez limitu minút; max. dĺžka jobu je 6 h.
     timeout-minutes: 210
     steps:
       - uses: actions/checkout@v4
 
-      - name: Už dnes prebehlo?
+      - name: Už dnes prebehlo? (ranný / popoludňajší beh)
         id: guard
+        env:
+          EVENT: ${{ github.event_name }}
+          SCHEDULE: ${{ github.event.schedule }}
+          FORCED: ${{ github.event.inputs.mode }}
         run: |
-          if [ "${{ github.event_name }}" = "schedule" ] && [ "$(python3 health.py done-today)" = "yes" ]; then
-            echo "Dnešný zber už prebehol a je v appke — tento termín preskakujem."
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "skip=false" >> "$GITHUB_OUTPUT"
-          fi
+          # report čítam z AKTUÁLNEHO origin/main — checkout čakajúceho behu môže byť hodiny starý (28. 11.)
+          git fetch -q --depth=1 origin main
+          python3 health.py plan
 
       - uses: actions/setup-python@v5
-        if: steps.guard.outputs.skip != 'true'
+        if: steps.guard.outputs.mode != 'skip'
         with:
           python-version: "3.12"
 
       # restore + save ZVLÁŠŤ: actions/cache@v4 ukladá len pri úspešnom jobe, takže keď 8. 10.–7. 11. padal
       # krok ingestu, každý deň sa zahodil celý zber a ďalší beh začal znova od stavu zo 7. 10.
       - name: Restore listings.db (cache)
-        if: steps.guard.outputs.skip != 'true'
+        if: steps.guard.outputs.mode != 'skip'
         uses: actions/cache/restore@v4
         with:
           path: listings.db
@@ -61,7 +75,7 @@ jobs:
             listings-db-
 
       - name: Seed DB ak nie je cache
-        if: steps.guard.outputs.skip != 'true'
+        if: steps.guard.outputs.mode != 'skip'
         run: |
           if [ ! -f listings.db ]; then
             echo "cache miss → seed z state/listings.db.gz"
@@ -70,92 +84,78 @@ jobs:
             echo "listings.db z cache ($(du -h listings.db | cut -f1))"
           fi
 
-      - name: Scrape (rolling — týždenná obmena celého katalógu + re-verify)
+      - name: Zber (ranný = rolling, popoludňajší = len nové)
         id: scrape
-        if: steps.guard.outputs.skip != 'true'
+        if: steps.guard.outputs.mode != 'skip'
         env:
-          REVERIFY_CAP: "800"
-          GEOCODE_BUDGET: "400"
-          # časový strop zberu: po 135 min sa ďalšie stránky nesťahujú (zvyšok obmeny v ďalšom behu), re-verify
-          # max. +10 min, geokód obcí max. +8 min — zvyšok limitu jobu (210 min) ostane na uloženie, commit a ingest
-          # do appky. Kraj sa zbiera PRVÝ na každom portáli, strop zastaví len celoštátnu obmenu.
-          # Odhad 2026-11-27: SR obmena ≈ 82 min + Žilinský kraj ≈ 35 min (Bazoš 9 kruhov ~326 strán,
-          # topreality ~290 strán, nehnutelnosti +6 okresov ~100 strán, zoznamrealit ~60 strán).
-          SCRAPE_BUDGET_MIN: "135"
+          MODE: ${{ steps.guard.outputs.mode }}
+          # ranný: časový strop zberu 135 min (kraj sa zbiera PRVÝ na každom portáli, strop zastaví len celoštátnu
+          # obmenu), re-verify Bazoša max. 300 inzerátov / +10 min, geokód obcí max. +8 min — zvyšok limitu jobu
+          # (210 min) ostane na zápis a ingest. Popoludňajší: 15 min, bez re-verify, geokód max. 60 obcí.
+          SCRAPE_BUDGET_MIN: ${{ steps.guard.outputs.mode == 'rolling' && '135' || '15' }}
+          REVERIFY_CAP: ${{ steps.guard.outputs.mode == 'rolling' && '300' || '0' }}
           REVERIFY_BUDGET_MIN: "10"
+          GEOCODE_BUDGET: ${{ steps.guard.outputs.mode == 'rolling' && '400' || '60' }}
         run: |
-          rm -f market-listings-*.json market-pricehistory-*.json   # staré chunky (napr. z 20. 9.) nesmú ostať v repe
-          python3 scraper.py --mode rolling
+          if [ "$MODE" = "rolling" ]; then
+            rm -f market-data.json market-listings-*.json market-pricehistory-*.json market-trends.json
+          else
+            rm -f market-data.json market-listings-*.json   # história cien a trendy z rána ostávajú
+          fi
+          python3 scraper.py --mode "$MODE"
 
       - name: Save listings.db (aj keď neskorší krok zlyhá)
-        if: always() && steps.guard.outputs.skip != 'true' && hashFiles('listings.db') != ''
+        if: always() && steps.guard.outputs.mode != 'skip' && hashFiles('listings.db') != ''
         uses: actions/cache/save@v4
         with:
           path: listings.db
           key: listings-db-${{ github.run_id }}
 
-      - name: Commit JSON výstupy
+      - name: Zápis výstupov do repa (bez konfliktov, nad aktuálnym main)
         id: commit
-        if: steps.guard.outputs.skip != 'true'
+        if: steps.guard.outputs.mode != 'skip'
+        env:
+          MODE: ${{ steps.guard.outputs.mode }}
         run: |
-          git config user.name "trilipy-bot"
-          git config user.email "bot@users.noreply.github.com"
-          git add -A -- 'market-*.json' scrape-report.json 2>/dev/null || true
-          if ! git diff --cached --quiet; then
-            git commit -m "data $(date -u +%F)"
-            for i in 1 2 3; do git pull --rebase -q && git push && break; sleep 15; done
+          if [ "$MODE" = "rolling" ]; then
+            python3 repo_push.py -m "data $(date -u +%F)" market-data.json 'market-listings-*.json' \
+              'market-pricehistory-*.json' market-trends.json scrape-report.json
+          else
+            python3 repo_push.py -m "data $(date -u +%F) popoludnie (len nové)" market-data.json \
+              'market-listings-*.json' scrape-report-newest.json
           fi
-          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
-      - name: Ingest do D1 (appka) — stepovo, pripnuté na commit, s opakovaním
-        # Každý krok je samostatný bounded request (limit Workera ~1000 subrequestov). Súbory sa čítajú
-        # z práve publikovaného commitu (ref), nie z „main" (cache raw GitHubu). Prechodná chyba
-        # (5xx/timeout) sa skúsi 4× s narastajúcim čakaním — dovtedy jeden výpadok zhodil celý ingest.
-        if: steps.guard.outputs.skip != 'true'
+      - name: Ingest do appky (D1) — po krokoch, pripnuté na commit, s opakovaním
+        id: ingest
+        if: steps.guard.outputs.mode != 'skip'
         env:
           SECRET: ${{ secrets.ALERT_SECRET }}
-          APP: https://trilipy-kataster.kristiak-bohus.workers.dev
           REF: ${{ steps.commit.outputs.sha }}
-        run: |
-          set -uo pipefail
-          post() {
-            body=$(python3 -c "import json,sys; d=json.loads(sys.argv[1]); d['ref']=sys.argv[2]; print(json.dumps(d))" "$1" "$REF")
-            for a in 1 2 3 4; do
-              code=$(curl -sS --max-time 150 -o /tmp/ing.json -w "%{http_code}" -X POST \
-                "$APP/api/ingest-market" -H "x-alert-secret: $SECRET" \
-                -H "content-type: application/json" -d "$body" || echo 000)
-              echo "  $1 (pokus $a) -> HTTP $code"; head -c 400 /tmp/ing.json 2>/dev/null; echo
-              [ "$code" = "200" ] && return 0
-              [ "$code" = "401" ] && return 1          # zlý secret — opakovanie nepomôže
-              sleep $((20 * a))
-            done
-            return 1
-          }
-          post '{"step":"data"}' || exit 1
-          chunks=$(python3 -c "import json;print(int(json.load(open('/tmp/ing.json')).get('chunks') or 0))")
-          ph=$(python3 -c "import json;print(int(json.load(open('/tmp/ing.json')).get('phChunks') or 0))")
-          echo "listings chunkov=$chunks, pricehistory chunkov=$ph"
-          i=0; while [ "$i" -lt "$chunks" ]; do post "{\"step\":\"listings\",\"chunk\":$i}" || exit 1; i=$((i+1)); done
-          i=0; while [ "$i" -lt "$ph" ]; do post "{\"step\":\"pricehistory\",\"chunk\":$i}" || exit 1; i=$((i+1)); done
-          post '{"step":"compute"}' || exit 1
+          INGEST_BUDGET_MIN: "30"
+        run: python3 ingest.py --ref "$REF"
 
-      - name: Stav zberu (Telegram len pri probléme) + značka „v appke"
-        if: steps.guard.outputs.skip != 'true'
+      - name: Stav zberu + značka „v appke" (Telegram len pri probléme ranného behu)
+        id: report
+        if: steps.guard.outputs.mode != 'skip'
         env:
+          MODE: ${{ steps.guard.outputs.mode }}
+          EVENT: ${{ github.event_name }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          python3 -c "import json; p='scrape-report.json'; r=json.load(open(p)); r['ingested']=True; json.dump(r, open(p,'w'), ensure_ascii=False, indent=1)"
-          python3 health.py report
-          git add scrape-report.json
-          if ! git diff --cached --quiet; then
-            git commit -m "report $(date -u +%F)"
-            for i in 1 2 3; do git pull --rebase -q && git push && break; sleep 15; done
-          fi
+          f=scrape-report.json; [ "$MODE" = "newest" ] && f=scrape-report-newest.json
+          python3 health.py mark-ingested --mode "$MODE"
+          python3 health.py report --mode "$MODE"
+          python3 repo_push.py -m "report $(date -u +%F)$([ "$MODE" = newest ] && echo ' popoludnie')" "$f"
 
-      - name: Hlásenie zlyhania do Telegramu
+      - name: Upozornenie vlastníkovi pri zlyhaní (hneď)
         if: failure()
         env:
+          ALERT_SECRET: ${{ secrets.ALERT_SECRET }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python3 health.py fail "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          STAGE_SCRAPE: ${{ steps.scrape.outcome }}
+          STAGE_COMMIT: ${{ steps.commit.outcome }}
+          STAGE_INGEST: ${{ steps.ingest.outcome }}
+          STAGE_REPORT: ${{ steps.report.outcome }}
+        run: python3 health.py fail "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" --mode "${{ steps.guard.outputs.mode || 'rolling' }}"

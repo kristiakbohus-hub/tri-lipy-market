@@ -10,8 +10,11 @@ Preto tento skript publikuje market-data.json na VEREJNÉ URL (napr. GitHub raw)
 a appka si ho stiahne (server fn refreshMarketData, /ceny) a uloží do D1.
 
 Použitie:
-  python3 scraper.py --mode rolling   # DENNE v cloude (2026-11-11): najnovšie strany + 1/7 celého katalógu
+  python3 scraper.py --mode rolling   # RANNÝ beh v cloude (2026-11-11): najnovšie strany + obmena celého katalógu
                                       #   (Bazoš, reality.sk, nehnutelnosti.sk, topreality.sk, zoznamrealit.sk)
+  python3 scraper.py --mode newest    # POPOLUDŇAJŠÍ ľahký beh (oprava 10, 2026-11-28): len NOVÉ inzeráty —
+                                      #   Bazoš najnovšie strany, kraj na reality.sk (= nehnutelnosti.sk) a topreality
+                                      #   zoradené od najnovších, kým strana prináša nové; bez obmeny, re-verify a trendov
   python3 scraper.py --mode delta     # len najnovšie strany (rýchly test)
   python3 scraper.py --mode full      # celý Bazoš naraz (hodiny)
 
@@ -25,17 +28,20 @@ Len stdlib — beží aj cez launchd bez pip.
 STAV: bazos.sk funguje (jednoduché HTML, obec+PSČ+dátum priamo v inzeráte).
 nehnutelnosti.sk/reality.sk načítavajú cez JS/API — doplniť v ďalšej iterácii.
 """
-import argparse, json, math, os, re, sqlite3, statistics, sys, time, unicodedata, urllib.error, urllib.request
-from datetime import date, datetime
+import argparse, json, math, os, random, re, sqlite3, statistics, sys, time, unicodedata, urllib.error, urllib.parse, urllib.request
+from datetime import date, datetime, timezone
 from html import unescape
 
 DIR = os.path.dirname(os.path.abspath(__file__))
 DB = os.path.join(DIR, "listings.db")
 OUT = os.path.join(DIR, "market-data.json")
-UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36"
 sys.path.insert(0, DIR)   # portals.py / price_trends.py vedľa skriptu (aj pri `python3 -I`)
+import polite             # noqa: E402 — čestný User-Agent, robots.txt, pauzy (oprava 10)
+import pii                # noqa: E402 — telefóny a e-maily von z verejných súborov (oprava 10)
 import portals            # noqa: E402 — Blocked / OutOfTime (spoločná politika: blokovanie sa neobchádza)
 from portals import Blocked, OutOfTime  # noqa: E402
+# Do 27. 11. 2026 tu bol User-Agent prehliadača Chrome. Vlastník 28. 11.: žiadne falšovanie prehliadača ani UA.
+UA = polite.UA
 # Telegram (zdieľaný modul v 17_UP_MONITOR)
 sys.path.insert(0, os.path.join(os.path.dirname(DIR), "17_UP_MONITOR"))
 try:
@@ -73,27 +79,50 @@ def out_of_time(hard=False, extra=0):
 # stranou Bazoša. V týždennej obmene sa tak koniec každej kategórie rátal ako 5 chýb po sebe
 # (6 kategórií × 5 = presne tých 30 „stránok sa nepodarilo načítať" z 11. 11.) a stál ~13 min čakania.
 RETRY_5XX = (5, 20)        # výpadok / timeout / 5xx: čakanie pred 2. a 3. pokusom
-RETRY_429 = (30, 60)       # 429 bez Retry-After; Retry-After portálu sa rešpektuje (max. 120 s)
+RETRY_429 = (30, 90)       # 429: exponenciálne čakanie (Retry-After portálu má prednosť, ak je dlhší)
 END_STATUS = (404, 410)    # neexistujúca stránka = koniec katalógu / zmazaný inzerát → neopakuje sa, nie je to chyba
 
-
-def _retry_after(err, default):
-    try:
-        return min(120.0, max(1.0, float(err.headers.get("Retry-After"))))
-    except Exception:
-        return default
+# ——— Bazoš: SLUŠNE (oprava 10, 2026-11-28) ———
+# 27. 11. Bazoš vrátil HTTP 429 po 151 stranách (tempo 1,3 s/strana + 800 HEAD re-verify po 0,35 s) a 9 kruhov
+# Žilinského kraja išlo cez hľadanie `hlokalita=PSČ&humkreis=km`, ktoré robots.txt Bazoša ZAKAZUJE
+# (Disallow: /*hledat=, /*hlokalita=, /*humkreis, /*cenaod=, /*order= …). Odteraz:
+#   - len stránky kategórií (/predam/byt/, /predam/byt/40/ …), ktoré robots.txt povoľuje; každá URL sa overí,
+#   - čestný User-Agent (polite.UA), pauza 5–8 s medzi stranami (polite.PACE), re-verify 2,5 s,
+#   - pri 429 exponenciálne čakanie 1 → 3 → 7 min (Retry-After má prednosť; dlhší ako 15 min = koniec hneď),
+#     doména sa do konca behu spomalí; potom Bazoš v behu KONČÍ (Blocked) a ostatné portály idú ďalej,
+#   - strop strán na beh (BAZOS_MAX_PAGES) a obmena katalógu raz za 10 dní namiesto 7,
+#   - po zablokovaní pauza Bazoša BAZOS_COOLDOWN_H hodín (popoludňajší beh ho vynechá, ráno skúsi znova).
+# Kraj appky sa na Bazoši zvlášť zbierať nedá (filter polohy je len cez zakázané hľadanie). Nové inzeráty z kraja
+# zachytia NAJNOVŠIE strany celoštátnych kategórií (Bazoš radí od najnovších) 2× denne; starším inzerátom sa cena
+# a stav overí obmenou (1/10 katalógu denne) a re-verify.
+BAZOS_HOST = "reality.bazos.sk"
+BAZOS_429_WAIT = (60, 180, 420)
+MAX_429_WAIT = 900
+BAZOS_ROT = 10
+BAZOS_NEWEST = {"rolling": 10, "newest": 6, "delta": 8, "full": 0}    # najviac najnovších strán na kategóriu
+BAZOS_NEWEST_MIN = 2           # aspoň 2 najnovšie strany (na 1. strane bývajú staršie TOP inzeráty)
+BAZOS_MAX_PAGES = {"rolling": 160, "newest": 40, "delta": 60, "full": 3000}
+BAZOS_COOLDOWN_H = 12
+_RETRY_429_HOST = {BAZOS_HOST: BAZOS_429_WAIT}
 
 
 def get(url, timeout=20):
     """→ (status, html, final_url). status 0 = výpadok spojenia/timeout aj po opakovaniach.
-    404/410 sa neopakuje (či ide o koniec katalógu, rozhodne volajúci). 429 a 5xx sa opakujú s čakaním
-    (Retry-After). 403, 429 aj po čakaní a stránka s overením „nie som robot" → Blocked: zdroj sa ZASTAVÍ
-    a zapíše do reportu — ochrana sa neobchádza (rovnaká politika ako portals.py)."""
+    404/410 sa neopakuje (či ide o koniec katalógu, rozhodne volajúci). 5xx sa opakuje; 429 sa opakuje
+    s exponenciálnym čakaním a rešpektuje Retry-After. 403, 429 aj po čakaní, stránka s overením „nie som robot"
+    a URL zakázaná v robots.txt → Blocked: zdroj sa ZASTAVÍ a zapíše do reportu — ochrana sa neobchádza
+    (rovnaká politika ako portals.py)."""
     if out_of_time():
         raise OutOfTime("časový strop — zvyšok obmeny v ďalšom behu")
+    if not polite.allowed(url):
+        why = "nedostupný" if polite.robots_state(url) == "unreachable" else "zakazuje túto adresu"
+        raise Blocked(f"robots.txt {why} — zber portálu ukončený")
+    host = urllib.parse.urlsplit(url).netloc.lower()
+    waits = _RETRY_429_HOST.get(host, RETRY_429)
     req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept-Language": "sk"})
     n5 = n429 = 0
     while True:
+        polite.pace(url)
         try:
             with urllib.request.urlopen(req, timeout=timeout) as r:
                 h = r.read().decode("utf-8", "replace")
@@ -105,19 +134,29 @@ def get(url, timeout=20):
             if e.code == 403:
                 raise Blocked("HTTP 403")
             if e.code == 429:
-                if n429 >= len(RETRY_429):
-                    raise Blocked("HTTP 429 — portál opakovane žiada spomaliť")
-                wait = _retry_after(e, RETRY_429[n429]); n429 += 1
-                print(f"  HTTP 429 {url} — čakám {wait:.0f} s", file=sys.stderr)
+                ra = polite.retry_after(e)
+                polite.slow_down(url)
+                if ra is not None and ra > MAX_429_WAIT:
+                    raise Blocked(f"HTTP 429 — portál žiada počkať {round(ra / 60)} min", retry_after=ra)
+                if n429 >= len(waits):
+                    raise Blocked(f"HTTP 429 aj po {n429} čakaniach ({sum(waits[:n429]) // 60} min) — portál žiada spomaliť",
+                                  retry_after=ra)
+                wait = max(ra or 0, waits[n429]) * random.uniform(1.0, 1.2)
+                if DEADLINE is not None and time.time() + wait > DEADLINE:
+                    raise Blocked("HTTP 429 — čakanie by presiahlo časový strop behu", retry_after=ra)
+                n429 += 1
+                print(f"  HTTP 429 {host} — čakám {wait:.0f} s (pokus {n429}/{len(waits)}"
+                      f"{', Retry-After ' + str(round(ra)) + ' s' if ra is not None else ''})", file=sys.stderr)
                 time.sleep(wait); continue
             if e.code >= 500 and n5 < len(RETRY_5XX):
-                time.sleep(_retry_after(e, RETRY_5XX[n5])); n5 += 1; continue
-            print(f"  fetch fail {url}: HTTP {e.code}", file=sys.stderr)
+                ra = polite.retry_after(e)
+                time.sleep(min(120.0, ra) if ra else RETRY_5XX[n5]); n5 += 1; continue
+            print(f"  fetch fail {pii.mask_text(url)}: HTTP {e.code}", file=sys.stderr)
             return e.code, "", url
         except Exception as e:  # noqa: BLE001 — timeout, reset spojenia, DNS
             if n5 < len(RETRY_5XX):
                 time.sleep(RETRY_5XX[n5]); n5 += 1; continue
-            print(f"  fetch fail {url}: {e}", file=sys.stderr)
+            print(f"  fetch fail {pii.mask_text(url)}: {e}", file=sys.stderr)
             return 0, "", url
     low = h[:5000].lower()
     if ("captcha" in low or "challenge-platform" in low or "cf-chl" in low) and len(h) < 60000:
@@ -208,61 +247,58 @@ def bazos_counter(html):
     return ((b - a + 1) if a and b and b >= a else None), n
 
 
-# Žilinský kraj (oblasť appky) DENNE CELÝ (2026-11-27). Bazoš nemá filter okresu ani kraja, len „PSČ + okolie
-# v km" → kruhy okolo okresných miest pokryjú všetkých 11 okresov; prekryv kruhov (a celoštátnej časti) sa
-# zlúči podľa ID inzerátu. Okres inzerátu sa určuje ako doteraz (geokód obce), kruh ho neurčuje.
-BAZOS_KRAJ = [
-    ("01001", 25, "Žilina + Bytča + Kysucké Nové Mesto + Rajecká dolina"),
-    ("02201", 25, "Čadca (až po Makov a Skalité)"),
-    ("03601", 20, "Martin"),
-    ("03901", 15, "Turčianske Teplice"),
-    ("03401", 20, "Ružomberok"),
-    ("03101", 30, "Liptovský Mikuláš (až po Važec)"),
-    ("02601", 15, "Dolný Kubín"),
-    ("02901", 25, "Námestovo (až po Oravskú Lesnú)"),
-    ("02744", 20, "Tvrdošín (Trstená, Zuberec, Suchá Hora)"),
-]
+# 27. 11. 2026 sa Žilinský kraj zbieral na Bazoši cez 9 kruhov „PSČ + okolie v km" (hlokalita/humkreis, ~326 strán
+# denne). robots.txt Bazoša tieto adresy zakazuje → od 28. 11. zrušené (pozri „Bazoš: SLUŠNE" vyššie).
+_BAZOS_ID = re.compile(r'<h2 class=nadpis><a href="/inzerat/(\d+)/')
 
 
-def crawl_bazos(mode, day_index=0, stat=None):
-    """delta = najnovších 8 strán; full = všetko; rolling = Žilinský kraj celý (kruhy BAZOS_KRAJ, všetky strany)
-    + celé SR: najnovších 8 + každá 7. hlbšia strana podľa dňa (za týždeň celý katalóg).
+def crawl_bazos(mode, day_index=0, stat=None, known=frozenset()):
+    """Bazoš — len stránky kategórií (robots.txt), od najnovších. Pre každú kategóriu:
+      A) NAJNOVŠIE strany, kým prinášajú inzeráty, ktoré ešte nepoznáme (aspoň BAZOS_NEWEST_MIN, najviac
+         BAZOS_NEWEST[mode]) — v ľahkom popoludňajšom behu (newest) je to všetko,
+      B) rolling: hlbšie strany s `strana % BAZOS_ROT == day_index` (každá raz za 10 dní), full: všetky.
+    Spolu najviac BAZOS_MAX_PAGES[mode] strán na beh. day_index = date.toordinal() % BAZOS_ROT.
 
-    2026-11-11: Bazoš ukazuje 40 inzerátov na stranu, kód krokoval po 20 → každý deň sa sťahovali prekryté
-    okná (2/7 katalógu, každý inzerát 2× týždenne = dvojnásobok požiadaviek). Veľkosť strany aj celkový
-    počet sa teraz čítajú zo stránky („Zobrazených 1-40 inzerátov z 2 505"), krok = skutočná veľkosť strany.
-    Koniec katalógu = HTTP 404 / stránka bez inzerátov / za celkovým počtom — NIE je to chyba."""
+    2026-11-11: Bazoš ukazuje 40 inzerátov na stranu; veľkosť strany aj celkový počet sa čítajú zo stránky
+    („Zobrazených 1-40 inzerátov z 2 505"), krok = skutočná veľkosť strany. Koniec katalógu = HTTP 404 /
+    stránka bez inzerátov / za celkovým počtom — NIE je to chyba."""
     st = stat if stat is not None else {}
     st.setdefault("pages", 0); st.setdefault("errors", 0)
-    newest = 8
-    rows = {}                         # ext_id → riadok (ten istý inzerát z viacerých kruhov / strán len raz)
+    st.setdefault("newest_pages", 0); st.setdefault("new", 0)
+    rows = {}                         # ext_id → riadok (ten istý inzerát z viacerých strán len raz)
+    seen_ids = set()                  # všetky ID videné v tomto behu (aj bez ceny)
     state = {"size": None, "src_err_run": 0}   # veľkosť strany (z počítadla; kým nie je známa, 20 = bezpečné prekrytie)
     smoke = portals.SMOKE
+    newest_cap = BAZOS_NEWEST.get(mode, 8)
+    max_pages = BAZOS_MAX_PAGES.get(mode, 160)
 
-    def walk(seg, ptype, deal, qs="", kraj=False):
-        """Prejde strany jedného hľadania. kraj=True → všetky strany (bez obmeny)."""
+    def walk(seg, ptype, deal):
         p = 0
         err_run = 0
         last = None                   # index poslednej strany podľa celkového počtu
-        while p < 1000:
-            if out_of_time():
-                st["stopped"] = "časový strop — zvyšok obmeny v ďalšom behu"
-                break
+        newest_done = newest_cap == 0
+        while p < 3000:
             if smoke and p >= 1:
-                break
-            if not kraj and mode == "delta" and p >= newest:
                 break
             if last is not None and p > last:
                 break                 # za koncom katalógu (podľa počítadla) — nič nesťahuj
-            if not kraj and mode == "rolling" and p >= newest and p % 7 != day_index:
-                p += 1
-                continue
+            in_newest = not newest_done
+            if not in_newest:
+                if mode not in ("rolling", "full"):
+                    break             # newest / delta: len najnovšie strany
+                if mode == "rolling" and p % BAZOS_ROT != day_index:
+                    p += 1
+                    continue
+            if st["pages"] >= max_pages:
+                st["capped_pages"] = f"strop {max_pages} strán na beh (zvyšok obmeny v ďalšom behu)"
+                break
+            if out_of_time():
+                st["stopped"] = "časový strop — zvyšok obmeny v ďalšom behu"
+                break
             step = state["size"] or 20
-            url = (f"{BASE}{seg}/{p * step}/" if p else f"{BASE}{seg}/") + qs
+            url = f"{BASE}{seg}/{p * step}/" if p else f"{BASE}{seg}/"
             code, html, _ = get(url)
             st["pages"] += 1
-            if kraj:
-                st["kraj_pages"] = st.get("kraj_pages", 0) + 1
             if code in END_STATUS:
                 break                 # za poslednou stranou Bazoš vracia 404 = koniec katalógu, nie chyba
             if code != 200 or not html:
@@ -273,45 +309,44 @@ def crawl_bazos(mode, day_index=0, stat=None):
                     st.setdefault("failed", []).append(seg)
                     break
                 if err_run >= CAT_FAIL_RUN:
-                    print(f"  bazos {seg}{qs[:40]}: {err_run} chýb po sebe na strane {p} — hľadanie ukončujem", file=sys.stderr)
-                    st.setdefault("failed", []).append(seg + (" (kraj)" if kraj else ""))
+                    print(f"  bazos {seg}: {err_run} chýb po sebe na strane {p} — kategóriu ukončujem", file=sys.stderr)
+                    st.setdefault("failed", []).append(seg)
                     break
                 time.sleep(10); p += 1; continue
             err_run = state["src_err_run"] = 0
             psize, total = bazos_counter(html)
             if p == 0 and psize:
                 state["size"] = psize
-            if p == 0 and kraj and total is not None:
-                st["kraj_found"] = st.get("kraj_found", 0) + total
             if total is not None and state["size"]:
                 last = max(0, math.ceil(total / state["size"]) - 1)
             if html.count(BAZOS_BLOCK) == 0 and p > 0:
                 break                 # prázdna stránka = koniec katalógu
+            ids = _BAZOS_ID.findall(html)
+            fresh = sum(1 for i in dict.fromkeys(ids) if i not in known and i not in seen_ids)
+            seen_ids.update(ids)
             for r in parse_bazos(html, ptype, deal):
                 rows.setdefault(r["ext_id"], r)
-            time.sleep(1.3)
+            if in_newest:
+                st["newest_pages"] += 1
+                st["new"] += fresh
+                if p + 1 >= newest_cap or (p + 1 >= BAZOS_NEWEST_MIN and fresh == 0):
+                    newest_done = True
             p += 1
 
     try:
-        if mode == "rolling":         # 1) kraj appky — každý deň všetky strany (pred celoštátnou časťou: časový strop)
-            for psc, km, _ in (BAZOS_KRAJ[:2] if smoke else BAZOS_KRAJ):
-                qs = f"?hledat=&hlokalita={psc}&humkreis={km}&cenaod=&cenado=&order="
-                for seg, ptype, deal in BAZOS:
-                    walk(seg, ptype, deal, qs, kraj=True)
-                    if st.get("stopped") or st.get("error"):
-                        break
-                if st.get("stopped") or st.get("error"):
-                    break
-            st["kraj_rows"] = len(rows)
-            print(f"  bazos Žilinský kraj: {len(rows)} inzerátov s cenou ({st.get('kraj_pages', 0)} strán)")
-        for seg, ptype, deal in BAZOS:   # 2) celé SR
-            if st.get("stopped") or st.get("error"):
+        for seg, ptype, deal in BAZOS:
+            if st.get("stopped") or st.get("error") or st.get("capped_pages"):
                 break
             before = len(rows)
             walk(seg, ptype, deal)
             print(f"  bazos {seg}: +{len(rows) - before} inzerátov (strana {state['size'] or '?'} inz.)")
     except Blocked as e:
-        st["stopped" if isinstance(e, OutOfTime) else "blocked"] = str(e)
+        if isinstance(e, OutOfTime):
+            st["stopped"] = str(e)
+        else:
+            st["blocked"] = str(e)
+            if getattr(e, "retry_after", None):
+                st["retry_after"] = round(e.retry_after)
     st["rows"] = len(rows)
     if state["size"]:
         st["page_size"] = state["size"]
@@ -442,8 +477,7 @@ def crawl_reality(c, mode, day_index=0, stat=None, nhn_known=()):
                                        price_eur=it["price"], ppm2=it["ppm2"], listed=None)
                     elif e in known:
                         still.append(e)              # cena dohodou — len potvrď, že žije
-                time.sleep(1.2)
-                p += 1
+                p += 1                # pauzu medzi stranami robí polite.pace() v get()
                 if full and p >= 40: break
             if st.get("stopped") or st.get("error"):
                 break
@@ -460,6 +494,67 @@ def crawl_reality(c, mode, day_index=0, stat=None, nhn_known=()):
     print(f"  reality.sk: {len(rows)} inzerátov s cenou (nových {new}), potvrdených {len(set(still))}"
           f" + {len(set(via_nhn))} cez nehnutelnosti.sk (rovnaké ID)")
     return list(rows.values())
+
+UC_NEWEST_PAGES = 5
+
+
+def crawl_uc_newest(c, stat=None, max_pages=UC_NEWEST_PAGES):
+    """POPOLUDŇAJŠÍ ľahký beh (oprava 10, 2026-11-28): nové inzeráty Žilinského kraja z reality.sk zoradené
+    „Vytvorené – najnovšie" (`order=created_date-newest`; robots.txt reality.sk to povoľuje, nehnutelnosti.sk
+    `?order=` zakazuje). reality.sk a nehnutelnosti.sk sú jedna databáza s rovnakými ID → nový inzerát sa zapíše
+    ako source='nehnutelnosti' s adresou nehnutelnosti.sk/detail/<ID> (portál presmeruje na inzerát, overené 308),
+    takže ranný zber nehnutelnosti.sk ten istý riadok len doplní (okres, presná adresa) a nevznikne duplicita.
+    Strany idú, kým prinášajú ID, ktoré ešte nepoznáme z nehnutelnosti.sk ani reality.sk."""
+    st = stat if stat is not None else {}
+    st.setdefault("pages", 0); st.setdefault("errors", 0); st.setdefault("new", 0)
+    st["via"] = "reality.sk — Žilinský kraj, vytvorené najnovšie"
+    nhn = {r[0] for r in c.execute("SELECT ext_id FROM listings WHERE source='nehnutelnosti'")}
+    rea = {r[0] for r in c.execute("SELECT ext_id FROM listings WHERE source='reality'")}
+    rows, seen_n, seen_r = {}, [], []
+    try:
+        for cat, ptype in REALITY:
+            for p in range(1 if portals.SMOKE else max_pages):
+                if out_of_time():
+                    st["stopped"] = "časový strop"
+                    break
+                url = f"https://www.reality.sk/{cat}/zilinsky-kraj/predaj/?order=created_date-newest" + (f"&page={p + 1}" if p else "")
+                code, h, _ = get(url)
+                st["pages"] += 1
+                if code != 200 or not h:
+                    if code not in END_STATUS:
+                        st["errors"] += 1
+                    break
+                items, _total = reality_page(h, ptype)
+                if not items:
+                    break
+                fresh = 0
+                for it in items:
+                    e = it["ext_id"]
+                    if e in rows:
+                        continue
+                    if e in nhn:
+                        seen_n.append(e); continue
+                    if e in rea:
+                        seen_r.append(e); continue
+                    fresh += 1
+                    if it["price"] or it["ppm2"]:
+                        rows[e] = dict(source="nehnutelnosti", ext_id=e, url=f"https://www.nehnutelnosti.sk/detail/{e}",
+                                       title=it["title"], ptype=it["ptype"], deal="predaj", obec=it["obec"], psc=None,
+                                       area_m2=it["area"], price_eur=it["price"], ppm2=it["ppm2"], listed=None,
+                                       okres=None, kraj="Žilinský")
+                st["new"] += fresh
+                if not fresh:
+                    break
+    except Blocked as e:
+        st["stopped" if isinstance(e, OutOfTime) else "blocked"] = str(e)
+    today = date.today().isoformat()
+    bump_seen(c, "nehnutelnosti", seen_n, today)
+    bump_seen(c, "reality", seen_r, today)
+    st["rows"] = len(rows)
+    st["seen"] = len(set(seen_n)) + len(set(seen_r))
+    print(f"  reality.sk → nehnutelnosti (kraj, najnovšie): {len(rows)} nových s cenou, potvrdených {st['seen']}")
+    return list(rows.values())
+
 
 # ——— zoznamrealit.sk (detail má JSON-LD Product; cena €/m² pri pozemkoch, celková pri bytoch/domoch) ———
 ZOZNAM = [("pozemky", "pozemok"), ("domy", "dom"), ("byty", "byt")]
@@ -541,7 +636,47 @@ def db():
         try: c.execute(f"ALTER TABLE listings ADD COLUMN {col} TEXT")
         except Exception: pass
     c.execute("CREATE INDEX IF NOT EXISTS ix_listings_seen ON listings(last_seen)")
+    # stav zberu medzi behmi (drží sa v cache spolu s DB): pauza Bazoša po zablokovaní (oprava 10)
+    c.execute("CREATE TABLE IF NOT EXISTS zber_meta(key TEXT PRIMARY KEY, value TEXT)")
     return c
+
+
+def meta_get(c, key):
+    r = c.execute("SELECT value FROM zber_meta WHERE key=?", (key,)).fetchone()
+    return r[0] if r else None
+
+
+def meta_set(c, key, value):
+    c.execute("INSERT OR REPLACE INTO zber_meta(key,value) VALUES(?,?)", (key, None if value is None else str(value)))
+    c.commit()
+
+
+def _local_hm(ts):
+    """Čas v Bratislave „28. 11. 14:05" (pre report; bez zoneinfo UTC+1)."""
+    try:
+        from zoneinfo import ZoneInfo
+        d = datetime.fromtimestamp(ts, ZoneInfo("Europe/Bratislava"))
+    except Exception:  # noqa: BLE001
+        d = datetime.fromtimestamp(ts, timezone.utc).astimezone()
+    return f"{d.day}. {d.month}. {d:%H:%M}"
+
+
+def bazos_pause(c, now=None):
+    """→ (do kedy, dôvod) ak má Bazoš pauzu po zablokovaní, inak None."""
+    now = now or time.time()
+    try:
+        until = float(meta_get(c, "bazos_pause_until") or 0)
+    except ValueError:
+        until = 0
+    return (until, meta_get(c, "bazos_pause_reason") or "") if until > now else None
+
+
+def set_bazos_pause(c, reason, retry_after=None, now=None):
+    now = now or time.time()
+    until = now + max(float(retry_after or 0), BAZOS_COOLDOWN_H * 3600)
+    meta_set(c, "bazos_pause_until", round(until))
+    meta_set(c, "bazos_pause_reason", reason)
+    return until
 
 def bump_seen(c, source, ext_ids, today):
     """Inzerát videný na zozname, ktorý už poznáme a nemáme k nemu nový riadok → len potvrď, že žije."""
@@ -631,7 +766,10 @@ def demand_deal(title, deal):
 
 
 def upsert(c, rows, today):
+    """Zapíše riadky; vráti množinu (source, ext_id) zapísaných — ľahký beh zverejní len tie."""
+    keys = set()
     for r in rows:
+        keys.add((r["source"], r["ext_id"]))
         r["deal"] = demand_deal(r.get("title"), r.get("deal"))
         ex = c.execute("SELECT price_eur FROM listings WHERE source=? AND ext_id=?", (r["source"], r["ext_id"])).fetchone()
         if ex:
@@ -655,20 +793,33 @@ def upsert(c, rows, today):
                 c.execute("INSERT OR REPLACE INTO price_history(source,ext_id,day,price_eur,ppm2) VALUES(?,?,?,?,?)",
                           (r["source"], r["ext_id"], r.get("listed") or today, r["price_eur"], r["ppm2"]))
     c.commit()
+    return keys
 
-def reverify_gone(c, today, cap=None):
+def reverify_gone(c, today, cap=None, stat=None):
     """Preverí bazos inzeráty nevidené dnes: HTTP 301/presmerovanie = vymazané (removed_at), 200 = žije (bump last_seen).
-    Rotuje podľa last_checked, priorita = najčerstvejšie (najpravdepodobnejšie transakcie + najlepšie sold-comps)."""
+    Rotuje podľa last_checked, priorita = najčerstvejšie (najpravdepodobnejšie transakcie + najlepšie sold-comps).
+    Slušne (oprava 10): čestný User-Agent, len adresy povolené v robots.txt, pauza REVERIFY_SLEEP (2,5 s;
+    do 27. 11. 0,35 s), strop REVERIFY_CAP (workflow 300; do 27. 11. 800). HTTP 429 → okamžitý koniec
+    (vráti sa v stat["blocked"], Bazoš dostane pauzu ako pri zablokovaní zoznamu)."""
     import urllib.error
-    cap = cap or int(os.environ.get("REVERIFY_CAP", "500"))
+    st = stat if stat is not None else {}
+    cap = int(os.environ.get("REVERIFY_CAP", "300")) if cap is None else cap
+    if cap <= 0:
+        return 0
+    sleep_s = float(os.environ.get("REVERIFY_SLEEP", "2.5"))
     class _NoRedir(urllib.request.HTTPRedirectHandler):
         def redirect_request(self, *a): return None
     opener = urllib.request.build_opener(_NoRedir)
     def _status(url):
+        if not url or not polite.allowed(url):
+            return None
         try:
             req = urllib.request.Request(url, method="HEAD", headers={"User-Agent": UA})
             with opener.open(req, timeout=12) as r: return r.status
-        except urllib.error.HTTPError as e: return e.code
+        except urllib.error.HTTPError as e:
+            if e.code == 429:
+                st["retry_after"] = polite.retry_after(e)
+            return e.code
         except Exception: return None
     rows = c.execute(
         "SELECT source, ext_id, url FROM listings "
@@ -679,10 +830,16 @@ def reverify_gone(c, today, cap=None):
     for src, ext, url in rows:
         if out_of_time(hard=True):
             print("  re-verify: časový strop — zvyšok pri ďalšom behu", file=sys.stderr); break
-        st = _status(url)
-        if st in (301, 302, 303, 307, 308):
+        code = _status(url)
+        if code == 429:
+            st["blocked"] = "HTTP 429 pri overovaní inzerátov (re-verify) — portál žiada spomaliť"
+            print(f"  re-verify STOP: HTTP 429 po {gone+alive+errs} preverených", file=sys.stderr); break
+        if code == 403:
+            st["blocked"] = "HTTP 403 pri overovaní inzerátov (re-verify)"
+            print(f"  re-verify STOP: HTTP 403 po {gone+alive+errs} preverených", file=sys.stderr); break
+        if code in (301, 302, 303, 307, 308):
             c.execute("UPDATE listings SET removed_at=?, last_checked=? WHERE source=? AND ext_id=?", (today, today, src, ext)); gone += 1; miss = 0
-        elif st == 200:
+        elif code == 200:
             # bump last_seen LEN ak bol nedávno videný (čerstvá cena); staré len over → nefalšuj čerstvosť
             c.execute("UPDATE listings SET last_seen=CASE WHEN last_seen >= date(?, '-21 day') THEN ? ELSE last_seen END, last_checked=? WHERE source=? AND ext_id=?",
                       (today, today, today, src, ext)); alive += 1; miss = 0
@@ -690,8 +847,9 @@ def reverify_gone(c, today, cap=None):
             c.execute("UPDATE listings SET last_checked=? WHERE source=? AND ext_id=?", (today, src, ext)); errs += 1; miss += 1
         if miss >= 20:
             print(f"  re-verify STOP: {miss} chýb po sebe (možný rate-limit) — po {gone+alive+errs} preverených", file=sys.stderr); break
-        time.sleep(float(os.environ.get("REVERIFY_SLEEP", "0.35")))   # slušný rate limit voči bazos
+        time.sleep(sleep_s * random.uniform(1.0, 1.3))   # slušný odstup voči Bazošu
     c.commit()
+    st.update(checked=gone + alive + errs, gone=gone, alive=alive, errors=errs)
     print(f"  re-verify: {gone+alive+errs} preverených → {gone} vymazaných, {alive} žije, {errs} chýb/preskočené")
     return gone
 
@@ -748,7 +906,7 @@ def build_market_data(c, today):
         if dom >= 90 and price_ok: flags.append("long")
         if below >= 15: flags.append("below")
         if flags and price_ok:
-            opps.append(dict(source=src, ext_id=None, url=url, title=title, ptype=pt, deal=dl,
+            opps.append(dict(source=src, ext_id=None, url=pii.public_url(src, url), title=pii.mask_text(title), ptype=pt, deal=dl,
                              okres=obec, obec=obec, area=area, price=price, ppm2=ppm2,
                              first_seen=fs, last_seen=ls, dom=dom, drop_pct=drop, below_pct=below, flags=",".join(flags)))
     opps.sort(key=lambda o: (o["below_pct"] + o["drop_pct"]), reverse=True)
@@ -796,9 +954,16 @@ def notify_price_alerts(data, limit=10):
     tg.send("\n".join(lines), parse_mode="")
     json.dump(alerted, open(TG_ALERTED, "w", encoding="utf-8"))
 
+REPORT = {"newest": "scrape-report-newest.json"}   # ľahký beh má vlastný report — ranný (scrape-report.json) ostane
+
+
+def report_path(mode):
+    return os.path.join(DIR, REPORT.get(mode, "scrape-report.json"))
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--mode", choices=["delta", "full", "rolling"], default="delta")
+    ap.add_argument("--mode", choices=["delta", "full", "rolling", "newest"], default="delta")
     ap.add_argument("--only", default="", help="čiarkou oddelené zdroje (test): bazos,reality,nehnutelnosti,topreality,zoznamrealit")
     ap.add_argument("--test", action="store_true")
     a = ap.parse_args()
@@ -816,9 +981,11 @@ def main():
         DEADLINE = t0 + budget_min * 60
         HARD_DEADLINE = DEADLINE + float(os.environ.get("REVERIFY_BUDGET_MIN", "10")) * 60
     day_index = date.today().toordinal() % 7
+    light = a.mode == "newest"
     only = {x.strip() for x in a.only.split(",") if x.strip()}
     want = lambda name: not only or name in only
-    report = {"date": today, "mode": a.mode, "day_index": day_index, "sources": {}}
+    report = {"date": today, "mode": a.mode, "day_index": day_index, "sources": {},
+              "started_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
 
     def run(name, fn):
         st = {"pages": 0, "rows": 0}
@@ -834,8 +1001,18 @@ def main():
 
     portals.DEADLINE = DEADLINE
     rows = []
+    bazos_st = None
     if want("bazos"):
-        rows += run("bazos", lambda st: crawl_bazos(a.mode, day_index, st))
+        pause = bazos_pause(c)
+        if pause:                                    # po zablokovaní Bazoš nechávame na pokoji (oprava 10)
+            report["sources"]["bazos"] = bazos_st = {
+                "pages": 0, "rows": 0, "seconds": 0,
+                "skipped": f"pauza po zablokovaní do {_local_hm(pause[0])} ({pause[1]})"}
+            print(f"  bazos: VYNECHANÝ — {bazos_st['skipped']}")
+        else:
+            known = {r[0] for r in c.execute("SELECT ext_id FROM listings WHERE source='bazos'")}
+            rows += run("bazos", lambda st: crawl_bazos(a.mode, date.today().toordinal() % BAZOS_ROT, st, known))
+            bazos_st = report["sources"]["bazos"]
     okk = portals.okres_kraj_map()
 
     def portal(name, fn):
@@ -846,38 +1023,60 @@ def main():
             return got
         return run(name, go)
 
-    portal_mode = a.mode != "full"
-    if portal_mode and want("nehnutelnosti"):
-        rows += portal("nehnutelnosti", lambda: portals.crawl_nehnutelnosti(day_index, refine_ptype))
-    if want("reality"):
-        # reality.sk = tá istá databáza a ID ako nehnutelnosti.sk → beží PO nej, inzeráty videné tam (aj dnes)
-        # len potvrdí a nerobí z nich druhý (duplicitný) riadok
-        nhn = {r[0] for r in c.execute("SELECT ext_id FROM listings WHERE source='nehnutelnosti'")}
-        nhn |= {r["ext_id"] for r in rows if r.get("source") == "nehnutelnosti"}
-        rows += run("reality", lambda st: crawl_reality(c, a.mode, day_index, st, nhn))
-    if portal_mode and want("topreality"):
-        rows += portal("topreality", lambda: portals.crawl_topreality(day_index, refine_ptype, okk))
-    if portal_mode and want("zoznamrealit"):
-        known = {r[0] for r in c.execute("SELECT ext_id FROM listings WHERE source='zoznamrealit'")}
-        rows += portal("zoznamrealit", lambda: portals.crawl_zoznamrealit(day_index, refine_ptype, known, okk))
+    if light:
+        # POPOLUDNIE: len nové inzeráty Žilinského kraja (Bazoš vyššie = najnovšie strany celého SR)
+        if want("nehnutelnosti") or want("reality"):
+            rows += run("nehnutelnosti", lambda st: crawl_uc_newest(c, st))
+        if want("topreality"):
+            known_tr = {r[0] for r in c.execute("SELECT ext_id FROM listings WHERE source='topreality'")}
+            rows += portal("topreality", lambda: portals.crawl_topreality_newest(refine_ptype, okk, known_tr))
+    else:
+        portal_mode = a.mode != "full"
+        if portal_mode and want("nehnutelnosti"):
+            rows += portal("nehnutelnosti", lambda: portals.crawl_nehnutelnosti(day_index, refine_ptype))
+        if want("reality"):
+            # reality.sk = tá istá databáza a ID ako nehnutelnosti.sk → beží PO nej, inzeráty videné tam (aj dnes)
+            # len potvrdí a nerobí z nich druhý (duplicitný) riadok
+            nhn = {r[0] for r in c.execute("SELECT ext_id FROM listings WHERE source='nehnutelnosti'")}
+            nhn |= {r["ext_id"] for r in rows if r.get("source") == "nehnutelnosti"}
+            rows += run("reality", lambda st: crawl_reality(c, a.mode, day_index, st, nhn))
+        if portal_mode and want("topreality"):
+            rows += portal("topreality", lambda: portals.crawl_topreality(day_index, refine_ptype, okk))
+        if portal_mode and want("zoznamrealit"):
+            known = {r[0] for r in c.execute("SELECT ext_id FROM listings WHERE source='zoznamrealit'")}
+            rows += portal("zoznamrealit", lambda: portals.crawl_zoznamrealit(day_index, refine_ptype, known, okk))
     for k, v in report["sources"].items():
         v["error_rate"] = error_rate(v)
         print(f"  [{k}] strán {v.get('pages')} · inzerátov {v.get('rows')} · potvrdených {v.get('seen', 0)}"
               f" · chýb {v.get('errors', 0)} ({v['error_rate']} %)"
               f"{' · BLOKOVANÉ: ' + v['blocked'] if v.get('blocked') else ''}{' · ZASTAVENÉ: ' + v['stopped'] if v.get('stopped') else ''}"
+              f"{' · VYNECHANÉ: ' + v['skipped'] if v.get('skipped') else ''}"
               f"{' · CHYBA: ' + v['error'] if v.get('error') else ''} · {v['seconds']} s")
-    upsert(c, rows, today)
-    try:                                    # re-verify: označ vymazané (301) + potvrď žijúce (bump last_seen)
-        reverify_gone(c, today)
-    except Exception as e:
-        print(f"  re-verify fail: {e}", file=sys.stderr)
-    try:                                    # denný snapshot mediánov → historické trendy
-        import price_trends
-        n = price_trends.snapshot(c, today)
-        price_trends.trends(c)              # prepočítaj + publikuj market-trends.json
-        print(f"  trendy: snapshot {n} skupín")
-    except Exception as e:
-        print(f"  trendy fail: {e}", file=sys.stderr)
+    touched = upsert(c, rows, today)
+    # re-verify Bazoša len v rannom behu a len keď Bazoš dnes neblokoval / nemá pauzu
+    if not light and bazos_st is not None and not bazos_st.get("blocked") and not bazos_st.get("skipped"):
+        rv = {}
+        try:                                # re-verify: označ vymazané (301) + potvrď žijúce (bump last_seen)
+            reverify_gone(c, today, stat=rv)
+        except Exception as e:
+            print(f"  re-verify fail: {e}", file=sys.stderr)
+        bazos_st["reverify"] = {k: v for k, v in rv.items() if k != "retry_after"}
+        if rv.get("blocked"):
+            bazos_st["blocked"] = rv["blocked"]
+            if rv.get("retry_after"):
+                bazos_st["retry_after"] = round(rv["retry_after"])
+    if bazos_st is not None and bazos_st.get("blocked"):
+        until = set_bazos_pause(c, bazos_st["blocked"], bazos_st.get("retry_after"))
+        bazos_st["pause_until"] = _local_hm(until)
+        print(f"  bazos: pauza do {bazos_st['pause_until']} (ďalšie behy ho dovtedy vynechajú)")
+    if not light:
+        try:                                    # denný snapshot mediánov → historické trendy
+            import price_trends
+            n = price_trends.snapshot(c, today)
+            price_trends.trends(c)              # prepočítaj + publikuj market-trends.json
+            print(f"  trendy: snapshot {n} skupín")
+        except Exception as e:
+            print(f"  trendy fail: {e}", file=sys.stderr)
     data = build_market_data(c, today)
     data["mode"] = a.mode
     report["active_listings"] = data["meta"]["counts"]["listings"]
@@ -886,23 +1085,30 @@ def main():
     report["by_source_active"] = dict(c.execute(
         "SELECT source, COUNT(*) FROM listings WHERE removed_at IS NULL AND last_seen >= date(?, ?) GROUP BY source",
         (today, f"-{ACTIVE_DAYS} day")).fetchall())
-    data["listings_chunks"] = write_listings_chunks(c, today)
-    data["pricehistory_chunks"] = write_price_history_chunks(c)
+    if light:
+        report["written"] = len(touched)
+        report["new_rows"] = sum(1 for s, e in touched
+                                 if c.execute("SELECT first_seen FROM listings WHERE source=? AND ext_id=?", (s, e)).fetchone()[0] == today)
+    data["listings_chunks"] = write_listings_chunks(c, today, keys=touched if light else None)
+    # história cien: ľahký beh ju nemení → 0 chunkov (ingest ju nečíta, súbory z rána v repe ostanú)
+    data["pricehistory_chunks"] = 0 if light else write_price_history_chunks(c)
     json.dump(data, open(OUT, "w", encoding="utf-8"), ensure_ascii=False)
     report["seconds"] = round(time.time() - t0)
+    report["finished_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
     report["chunks"] = data["listings_chunks"]
     report["problems"] = health_problems(report)
     report["info"] = health_info(report)
     report["summary"] = [source_summary(k, v) for k, v in report["sources"].items()]
     report["ok"] = not report["problems"]
     # report behu ide do repa (verejne čitateľný) — bez neho sa dalo zistiť stav zberu len z logov
-    json.dump(report, open(os.path.join(DIR, "scrape-report.json"), "w", encoding="utf-8"), ensure_ascii=False, indent=1)
+    json.dump(report, open(report_path(a.mode), "w", encoding="utf-8"), ensure_ascii=False, indent=1)
     print(f"Hotovo: {data['meta']['counts']}, chunkov {data['listings_chunks']} → {OUT}")
     # TG alerty scrapera vypnuté — konsolidované do jedného ranného brífingu (deal_radar_tg.py --digest).
     # Zapnú sa len s explicitným --tg.
     if "--tg" in sys.argv:
         notify_price_alerts(data)
     publish()
+
 
 # Prahy zdravia behu (rolling, celé SR). Pod nimi niečo nie je v poriadku — pošle sa varovanie do Telegramu.
 MIN_ROWS = {"bazos": 3000, "nehnutelnosti": 1500, "topreality": 1500, "reality": 1, "zoznamrealit": 1}
@@ -928,7 +1134,10 @@ def health_problems(report):
     for name, st in report.get("sources", {}).items():
         errs, rate = st.get("errors") or 0, error_rate(st)
         if st.get("blocked"):
-            out.append(f"{name}: portál zablokoval prístup ({st['blocked']})")
+            out.append(f"{name}: portál zablokoval prístup ({st['blocked']})"
+                       + (f" — zber ho do {st['pause_until']} vynecháva, ostatné portály idú ďalej" if st.get("pause_until") else ""))
+        elif st.get("skipped"):
+            out.append(f"{name}: dnes nezbieraný — {st['skipped']}")
         elif st.get("error"):
             out.append(f"{name}: zlyhal ({st['error'][:120]})")
         elif st.get("stopped"):
@@ -951,6 +1160,13 @@ def health_info(report):
     for name, st in report.get("sources", {}).items():
         if st.get("stopped"):
             out.append(f"{name}: zastavené ({st['stopped']}) po {st.get('pages', 0)} stranách")
+        if st.get("capped_pages"):
+            out.append(f"{name}: {st['capped_pages']}")
+        if report.get("mode") != "rolling" and st.get("blocked"):
+            out.append(f"{name}: portál zablokoval prístup ({st['blocked']})"
+                       + (f", pauza do {st['pause_until']}" if st.get("pause_until") else ""))
+        if report.get("mode") != "rolling" and st.get("skipped"):
+            out.append(f"{name}: nezbieraný — {st['skipped']}")
         errs, rate = st.get("errors") or 0, error_rate(st)
         if errs and not (errs >= ERR_MIN_COUNT and rate > ERR_RATE_MAX) and not st.get("failed"):
             out.append(f"{name}: {errs} prechodných chýb ({rate} %, prah {ERR_RATE_MAX:g} %)")
@@ -961,15 +1177,20 @@ def health_info(report):
 
 def source_summary(name, st):
     """Jeden riadok na zdroj do scrape-report.json (pre ľudí; stroje čítajú „sources")."""
-    state = ("BLOKOVANÉ" if st.get("blocked") else "CHYBA" if st.get("error") else
-             "zastavené časovým stropom" if st.get("stopped") else "ok")
+    state = ("BLOKOVANÉ" if st.get("blocked") else "VYNECHANÉ" if st.get("skipped") else "CHYBA" if st.get("error") else
+             "zastavené časovým stropom" if st.get("stopped") else "strop strán" if st.get("capped_pages") else "ok")
     return (f"{name}: {state} · {st.get('pages', 0)} strán · {st.get('rows', 0)} inzerátov · "
             f"{st.get('seen', 0)} potvrdených · chybovosť {error_rate(st)} % · {round((st.get('seconds') or 0) / 60, 1)} min")
 
 
-def write_listings_chunks(c, today, size=3000):
-    """Všetky dnes videné inzeráty (s lat/lng z geokódu obce) → market-listings-<i>.json chunky."""
+def write_listings_chunks(c, today, size=3000, keys=None):
+    """Všetky dnes videné inzeráty (s lat/lng z geokódu obce) → market-listings-<i>.json chunky.
+    keys = len tieto (source, ext_id) — ľahký popoludňajší beh zverejní len to, čo sám zapísal (nové inzeráty),
+    nie znova celý ranný zber (~60 000 riadkov = zbytočné zápisy do D1).
+    Repo je verejné: titulok bez telefónov/e-mailov, adresa inzerátu bez čísla (pii.py, oprava 10)."""
     rows = c.execute("SELECT source,ext_id,url,title,ptype,deal,obec,psc,area_m2,price_eur,ppm2,first_seen,last_seen,first_price,removed_at,okres,kraj FROM listings WHERE last_seen=? OR removed_at=?", (today, today)).fetchall()
+    if keys is not None:
+        rows = [r for r in rows if (r[0], r[1]) in keys]
     pairs = sorted({(r[6], r[15]) for r in rows if r[6]}, key=lambda x: (x[0], x[1] or ""))
     geo = {}
     budget = int(os.environ.get("GEOCODE_BUDGET", "400"))   # nové dopyty na Nominatim za beh (1/s); zvyšok ďalší deň
@@ -986,7 +1207,7 @@ def write_listings_chunks(c, today, size=3000):
         fp, pr = r[13], r[9]
         drop = round((fp - pr) / fp * 100, 1) if fp and pr and fp > pr else 0
         flags = ["drop"] if drop >= 5 else []
-        out.append(dict(source=r[0], ext_id=r[1], url=r[2], title=r[3], ptype=r[4], deal=r[5], obec=r[6], okres=okres, kraj=kraj, psc=r[7],
+        out.append(dict(source=r[0], ext_id=r[1], url=pii.public_url(r[0], r[2]), title=pii.mask_text(r[3]), ptype=r[4], deal=r[5], obec=r[6], okres=okres, kraj=kraj, psc=r[7],
                         lat=la, lng=ln, area_m2=r[8], price_eur=pr, ppm2=r[10], first_seen=r[11], last_seen=r[12],
                         first_price=fp, flags=",".join(flags), removed_at=r[14]))
     n = 0

@@ -27,7 +27,13 @@ import urllib.error
 import urllib.request
 from html import unescape
 
-UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+import os as _os0, sys as _sys0
+_sys0.path.insert(0, _os0.path.dirname(_os0.path.abspath(__file__)))
+import polite  # noqa: E402 — čestný User-Agent, robots.txt, pauzy (oprava 10, 2026-11-28)
+
+# Do 27. 11. 2026 tu bol User-Agent prehliadača Chrome. Vlastník 28. 11.: žiadne falšovanie prehliadača ani UA.
+# Overené 28. 11.: nehnutelnosti, topreality, reality aj zoznamrealit čestnému UA vracajú bežné stránky (200).
+UA = polite.UA
 JSONLD = re.compile(r'<script type="application/ld\+json"[^>]*>(.*?)</script>', re.S)
 
 # 79 okresov SR (názov ako v appke / Nominatime) → kraj
@@ -88,7 +94,11 @@ SMOKE = bool(_os.environ.get("PORTALS_SMOKE"))
 
 
 class Blocked(Exception):
-    pass
+    """Portál blokuje (403/429/overenie „nie som robot"/robots.txt) → zdroj sa v behu zastaví, neobchádza sa.
+    retry_after = koľko sekúnd portál žiada počkať (hlavička Retry-After), ak to povedal."""
+    def __init__(self, msg="", retry_after=None):
+        super().__init__(msg)
+        self.retry_after = retry_after
 
 
 class OutOfTime(Blocked):
@@ -103,24 +113,40 @@ def fetch(url, timeout=30, tries=3):
     Výpadok spojenia / 5xx sa skúsi znova (3×, čakanie 5 s, 15 s) — jeden výpadok nesmie stratiť okres."""
     if DEADLINE is not None and time.time() > DEADLINE:
         raise OutOfTime("časový strop — zvyšok obmeny v ďalšom behu")
+    if not polite.allowed(url):
+        why = "nedostupný" if polite.robots_state(url) == "unreachable" else "zakazuje túto adresu"
+        raise Blocked(f"robots.txt {why} — zber portálu ukončený")
     req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept-Language": "sk", "Accept": "text/html"})
-    for i in range(tries):
+    waited429 = False
+    i = 0
+    while i < tries:
+        polite.pace(url)
         try:
             with urllib.request.urlopen(req, timeout=timeout) as r:
                 h = r.read().decode("utf-8", "replace")
                 st = r.status
             break
         except urllib.error.HTTPError as e:
-            if e.code in (403, 429):
-                raise Blocked(f"HTTP {e.code}")
+            if e.code == 403:
+                raise Blocked("HTTP 403")
+            if e.code == 429:
+                # slušne (oprava 10): raz počkať (Retry-After, inak 60 s), doménu spomaliť; druhé 429 = koniec portálu
+                ra = polite.retry_after(e)
+                polite.slow_down(url)
+                if waited429 or (ra is not None and ra > 300) or \
+                        (DEADLINE is not None and time.time() + (ra or 60) > DEADLINE):
+                    raise Blocked("HTTP 429 — portál žiada spomaliť", retry_after=ra)
+                waited429 = True
+                time.sleep(max(ra or 0, 60.0))
+                continue
             if e.code >= 500 and i < tries - 1:
-                time.sleep(5 + 10 * i); continue
+                time.sleep(5 + 10 * i); i += 1; continue
             if e.code == 503:
                 raise Blocked("HTTP 503")
             return e.code, ""
         except Exception:  # noqa: BLE001 — timeout, reset spojenia, DNS
             if i < tries - 1:
-                time.sleep(5 + 10 * i); continue
+                time.sleep(5 + 10 * i); i += 1; continue
             return 0, ""
     low = h[:4000].lower()
     if ("captcha" in low or "challenge-platform" in low or "cf-chl" in low) and len(h) < 60000:
@@ -277,6 +303,23 @@ def _tr_found(html):
     return _num(m.group(1)) if m else None
 
 
+def _tr_row(c, ptype, deal, okres_kraj, in_kraj, refine_ptype):
+    """Karta topreality → riadok inzerátu (rovnaký tvar ako ostatné portály)."""
+    okres = norm_okres(c["okres"])
+    if not okres and c["obec"] in okres_kraj:  # karta bez „(okres)" = obec je samotné okresné mesto
+        okres = c["obec"]
+    pt = refine_ptype(ptype, c["name"])
+    area = (c["plot"] or c["usable"]) if ptype == "pozemok" else (c["usable"] or c["plot"])
+    area = float(area) if area else None
+    if c["unit"]:                      # cena za m² → celková = €/m² × výmera
+        price, ppm2 = (round(c["price"] * area) if c["price"] and area else None), (float(c["price"]) if c["price"] else None)
+    else:
+        price, ppm2 = c["price"], _ppm2(c["price"], area)
+    return dict(source="topreality", ext_id=c["id"], url=c["url"], title=c["name"][:160], ptype=pt,
+                deal=deal, obec=c["obec"], psc=None, area_m2=area, price_eur=price,
+                ppm2=ppm2, listed=None, okres=okres, kraj=okres_kraj.get(okres) or (KRAJ if in_kraj else None))
+
+
 def crawl_topreality(day_index, refine_ptype, okres_kraj, sleep=1.3):
     """1) CELÝ Žilinský kraj denne (hľadanie s filtrom kraja, všetky strany), 2) celé SR: najnovšie strany
     + každá 7. hlbšia (týždenná obmena). Inzerát z kraja sa v celoštátnej časti už druhýkrát nezapíše."""
@@ -289,19 +332,7 @@ def crawl_topreality(day_index, refine_ptype, okres_kraj, sleep=1.3):
         if not c["url"] or c["id"] in got:
             return
         got.add(c["id"])
-        okres = norm_okres(c["okres"])
-        if not okres and c["obec"] in okres_kraj:  # karta bez „(okres)" = obec je samotné okresné mesto
-            okres = c["obec"]
-        pt = refine_ptype(ptype, c["name"])
-        area = (c["plot"] or c["usable"]) if ptype == "pozemok" else (c["usable"] or c["plot"])
-        area = float(area) if area else None
-        if c["unit"]:                      # cena za m² → celková = €/m² × výmera
-            price, ppm2 = (round(c["price"] * area) if c["price"] and area else None), (float(c["price"]) if c["price"] else None)
-        else:
-            price, ppm2 = c["price"], _ppm2(c["price"], area)
-        rows.append(dict(source="topreality", ext_id=c["id"], url=c["url"], title=c["name"][:160], ptype=pt,
-                         deal=deal, obec=c["obec"], psc=None, area_m2=area, price_eur=price,
-                         ppm2=ppm2, listed=None, okres=okres, kraj=okres_kraj.get(okres) or (KRAJ if in_kraj else None)))
+        rows.append(_tr_row(c, ptype, deal, okres_kraj, in_kraj, refine_ptype))
         st["rows"] += 1
         if in_kraj:
             st["kraj_rows"] += 1
@@ -348,6 +379,48 @@ def crawl_topreality(day_index, refine_ptype, okres_kraj, sleep=1.3):
                 for c in cards:
                     add(c, ptype, deal, False)
                 pg += 1
+    except Blocked as e:
+        st["stopped" if isinstance(e, OutOfTime) else "blocked"] = str(e)
+    return rows, seen, st
+
+
+TR_NEWEST_PAGES = 5      # popoludňajší beh: najviac 5 strán na kategóriu (kraj, od najnovších)
+
+
+def crawl_topreality_newest(refine_ptype, okres_kraj, known, max_pages=TR_NEWEST_PAGES, sleep=1.3):
+    """POPOLUDŇAJŠÍ ľahký beh (oprava 10, 2026-11-28): Žilinský kraj zoradený „pridania (najnovšie)"
+    (`sort=id_desc`, robots.txt topreality to povoľuje); strany idú, kým prinášajú inzeráty, ktoré ešte
+    nepoznáme (known = ID z databázy zberu). Známe inzeráty sa len potvrdia (seen)."""
+    rows, seen, st = [], [], _stat()
+    st["new"] = 0
+    got = set()
+    try:
+        from urllib.parse import quote
+        q = "&obec=" + quote(TR_KRAJ_ID) + "&n_search=search&searchType=string&sort=id_desc"
+        for tid, ptype, deal in TR_CATS:
+            for pg in range(1, (1 if SMOKE else max_pages) + 1):
+                code, h = fetch(f"https://www.topreality.sk/vyhladavanie-nehnutelnosti-{pg}.html?type={tid}{q}")
+                time.sleep(sleep)
+                st["pages"] += 1
+                cards = _tr_cards(h) if code == 200 else []
+                if not cards:
+                    if code != 200:
+                        st["errors"] += 1
+                    break
+                fresh = 0
+                for c in cards:
+                    if c["id"] in got or not c["url"]:
+                        continue
+                    got.add(c["id"])
+                    if c["id"] in known:
+                        seen.append(c["id"]); st["seen"] += 1
+                        continue
+                    fresh += 1
+                    rows.append(_tr_row(c, ptype, deal, okres_kraj, True, refine_ptype))
+                    st["rows"] += 1
+                st["new"] += fresh
+                if not fresh:
+                    break                  # strana bez nových = staršie už poznáme
     except Blocked as e:
         st["stopped" if isinstance(e, OutOfTime) else "blocked"] = str(e)
     return rows, seen, st
