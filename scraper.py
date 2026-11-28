@@ -253,10 +253,10 @@ _BAZOS_ID = re.compile(r'<h2 class=nadpis><a href="/inzerat/(\d+)/')
 
 
 def crawl_bazos(mode, day_index=0, stat=None, known=frozenset()):
-    """Bazoš — len stránky kategórií (robots.txt), od najnovších. Pre každú kategóriu:
+    """Bazoš — len stránky kategórií (robots.txt), od najnovších. Najprv pre VŠETKY kategórie:
       A) NAJNOVŠIE strany, kým prinášajú inzeráty, ktoré ešte nepoznáme (aspoň BAZOS_NEWEST_MIN, najviac
          BAZOS_NEWEST[mode]) — v ľahkom popoludňajšom behu (newest) je to všetko,
-      B) rolling: hlbšie strany s `strana % BAZOS_ROT == day_index` (každá raz za 10 dní), full: všetky.
+      potom B) rolling: hlbšie strany s `strana % BAZOS_ROT == day_index` (každá raz za 10 dní), full: všetky.
     Spolu najviac BAZOS_MAX_PAGES[mode] strán na beh. day_index = date.toordinal() % BAZOS_ROT.
 
     2026-11-11: Bazoš ukazuje 40 inzerátov na stranu; veľkosť strany aj celkový počet sa čítajú zo stránky
@@ -272,12 +272,17 @@ def crawl_bazos(mode, day_index=0, stat=None, known=frozenset()):
     newest_cap = BAZOS_NEWEST.get(mode, 8)
     max_pages = BAZOS_MAX_PAGES.get(mode, 160)
 
-    def walk(seg, ptype, deal):
-        p = 0
+    ends = {}                         # seg → (prvá strana za najnovšími, posledná strana podľa počítadla)
+
+    def walk(seg, ptype, deal, phase):
+        """phase "newest" = najnovšie strany od p=0; phase "deep" = hlbšie strany (obmena) od konca najnovších."""
+        p, last = ends.get(seg, (0, None)) if phase == "deep" else (0, None)
         err_run = 0
-        last = None                   # index poslednej strany podľa celkového počtu
-        newest_done = newest_cap == 0
+        ended = False                 # koniec katalógu (404 / prázdna strana) — obmena tu už nemá čo robiť
+        newest_done = phase == "deep" or newest_cap == 0
         while p < 3000:
+            if phase == "newest" and newest_done:
+                break
             if smoke and p >= 1:
                 break
             if last is not None and p > last:
@@ -300,6 +305,7 @@ def crawl_bazos(mode, day_index=0, stat=None, known=frozenset()):
             code, html, _ = get(url)
             st["pages"] += 1
             if code in END_STATUS:
+                ended = True
                 break                 # za poslednou stranou Bazoš vracia 404 = koniec katalógu, nie chyba
             if code != 200 or not html:
                 st["errors"] += 1
@@ -320,6 +326,7 @@ def crawl_bazos(mode, day_index=0, stat=None, known=frozenset()):
             if total is not None and state["size"]:
                 last = max(0, math.ceil(total / state["size"]) - 1)
             if html.count(BAZOS_BLOCK) == 0 and p > 0:
+                ended = True
                 break                 # prázdna stránka = koniec katalógu
             ids = _BAZOS_ID.findall(html)
             fresh = sum(1 for i in dict.fromkeys(ids) if i not in known and i not in seen_ids)
@@ -331,15 +338,26 @@ def crawl_bazos(mode, day_index=0, stat=None, known=frozenset()):
                 st["new"] += fresh
                 if p + 1 >= newest_cap or (p + 1 >= BAZOS_NEWEST_MIN and fresh == 0):
                     newest_done = True
+                    ends[seg] = (p + 1, last)
+                    if phase == "newest":
+                        return
             p += 1
+        if phase == "newest":
+            ends[seg] = (3000 if ended else p, last)
 
+    # 1) NAJNOVŠIE strany všetkých kategórií (nové inzeráty majú prednosť pred stropom strán), 2) obmena hlbších
+    # strán — poradie kategórií sa denne posúva, aby strop strán neskracoval obmenu stále tým istým (28. 11.:
+    # po 1,5 dňa bez Bazoša išlo 50 strán na najnovšie a strop 160 zastavil obmenu).
+    deep_order = BAZOS[day_index % len(BAZOS):] + BAZOS[:day_index % len(BAZOS)]
     try:
-        for seg, ptype, deal in BAZOS:
-            if st.get("stopped") or st.get("error") or st.get("capped_pages"):
-                break
-            before = len(rows)
-            walk(seg, ptype, deal)
-            print(f"  bazos {seg}: +{len(rows) - before} inzerátov (strana {state['size'] or '?'} inz.)")
+        for phase, cats in (("newest", BAZOS), ("deep", deep_order if mode in ("rolling", "full") else [])):
+            for seg, ptype, deal in cats:
+                if st.get("stopped") or st.get("error") or st.get("capped_pages"):
+                    break
+                before = len(rows)
+                walk(seg, ptype, deal, phase)
+                print(f"  bazos {seg} ({'najnovšie' if phase == 'newest' else 'obmena'}): +{len(rows) - before} inzerátov"
+                      f" (strana {state['size'] or '?'} inz.)")
     except Blocked as e:
         if isinstance(e, OutOfTime):
             st["stopped"] = str(e)
