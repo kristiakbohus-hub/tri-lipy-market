@@ -1,0 +1,62 @@
+{
+ "date": "2026-11-28",
+ "mode": "newest",
+ "day_index": 6,
+ "sources": {
+  "bazos": {
+   "pages": 33,
+   "rows": 1105,
+   "errors": 0,
+   "newest_pages": 33,
+   "new": 241,
+   "page_size": 40,
+   "seconds": 208,
+   "error_rate": 0.0
+  },
+  "nehnutelnosti": {
+   "pages": 4,
+   "rows": 0,
+   "errors": 0,
+   "new": 1,
+   "via": "reality.sk — Žilinský kraj, vytvorené najnovšie",
+   "seen": 71,
+   "seconds": 16,
+   "error_rate": 0.0
+  },
+  "topreality": {
+   "pages": 4,
+   "rows": 1,
+   "seen": 63,
+   "errors": 0,
+   "blocked": null,
+   "capped": [],
+   "new": 1,
+   "seconds": 14,
+   "error_rate": 0.0
+  }
+ },
+ "started_at": "2026-11-28T11:22:51+00:00",
+ "active_listings": 61506,
+ "seen_today": 42496,
+ "new_today": 1884,
+ "by_source_active": {
+  "bazos": 53472,
+  "nehnutelnosti": 54544,
+  "reality": 8901,
+  "topreality": 53691,
+  "zoznamrealit": 2779
+ },
+ "written": 1106,
+ "new_rows": 127,
+ "seconds": 240,
+ "finished_at": "2026-11-28T11:26:52+00:00",
+ "chunks": 1,
+ "problems": [],
+ "info": [],
+ "summary": [
+  "bazos: ok · 33 strán · 1105 inzerátov · 0 potvrdených · chybovosť 0.0 % · 3.5 min",
+  "nehnutelnosti: ok · 4 strán · 0 inzerátov · 71 potvrdených · chybovosť 0.0 % · 0.3 min",
+  "topreality: ok · 4 strán · 1 inzerátov · 63 potvrdených · chybovosť 0.0 % · 0.2 min"
+ ],
+ "ok": true
+}
