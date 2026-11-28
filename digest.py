@@ -44,6 +44,9 @@ def call(action, **extra):
 def main():
     import tg
     if not tg.configured():
+        st = (call("status").get("status") or {})          # len čítanie — keď súhrn už odišiel, netreba hlásiť chybu
+        if st.get("status") == "sent":
+            print("[digest] neposielam: dnešný súhrn už bol odoslaný (repo secrets TELEGRAM_* chýbajú)"); return 0
         gh_error("chýbajú repo secrets TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID — súhrn sa z GitHubu neposiela "
                  "(deň sa nezaberá; zálohu robí Cron Trigger appky)")
         return 1
