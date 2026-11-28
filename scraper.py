@@ -249,7 +249,6 @@ def bazos_counter(html):
 
 # 27. 11. 2026 sa Žilinský kraj zbieral na Bazoši cez 9 kruhov „PSČ + okolie v km" (hlokalita/humkreis, ~326 strán
 # denne). robots.txt Bazoša tieto adresy zakazuje → od 28. 11. zrušené (pozri „Bazoš: SLUŠNE" vyššie).
-_BAZOS_ID = re.compile(r'<h2 class=nadpis><a href="/inzerat/(\d+)/')
 
 
 def crawl_bazos(mode, day_index=0, stat=None, known=frozenset()):
@@ -266,7 +265,7 @@ def crawl_bazos(mode, day_index=0, stat=None, known=frozenset()):
     st.setdefault("pages", 0); st.setdefault("errors", 0)
     st.setdefault("newest_pages", 0); st.setdefault("new", 0)
     rows = {}                         # ext_id → riadok (ten istý inzerát z viacerých strán len raz)
-    seen_ids = set()                  # všetky ID videné v tomto behu (aj bez ceny)
+    seen_ids = set()                  # ID inzerátov s cenou videné v tomto behu
     state = {"size": None, "src_err_run": 0}   # veľkosť strany (z počítadla; kým nie je známa, 20 = bezpečné prekrytie)
     smoke = portals.SMOKE
     newest_cap = BAZOS_NEWEST.get(mode, 8)
@@ -328,10 +327,13 @@ def crawl_bazos(mode, day_index=0, stat=None, known=frozenset()):
             if html.count(BAZOS_BLOCK) == 0 and p > 0:
                 ended = True
                 break                 # prázdna stránka = koniec katalógu
-            ids = _BAZOS_ID.findall(html)
-            fresh = sum(1 for i in dict.fromkeys(ids) if i not in known and i not in seen_ids)
-            seen_ids.update(ids)
+            # „nové" = inzerát s cenou, ktorý ešte nepoznáme. Inzeráty bez ceny sa do databázy nezapisujú, takže by
+            # boli „nové" navždy a ľahký beh by kvôli nim zakaždým išiel až po strop (28. 11.: 33 strán namiesto ~12).
+            fresh = 0
             for r in parse_bazos(html, ptype, deal):
+                if r["ext_id"] not in known and r["ext_id"] not in seen_ids:
+                    fresh += 1
+                seen_ids.add(r["ext_id"])
                 rows.setdefault(r["ext_id"], r)
             if in_newest:
                 st["newest_pages"] += 1
